@@ -4,153 +4,270 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NetCorp — The Garage</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap"
+      rel="stylesheet"
+    />
     <style>
+      /* Design tokens borrowed from Quorum (playquorum.dev). */
       :root {
+        --signal: oklch(0.8 0.12 225);
+        --danger: #e5484d;
+        --warn: #f0b429;
+        --ok: #6fcf8f;
+        --ink: #eaebec;
+        --muted: #8b9099;
+        --panel: #18191c;
+        --panel-shadow:
+          inset 0 1px 0 oklch(1 0 0 / 0.06),
+          0 0 0 1px oklch(1 0 0 / 0.07),
+          0 24px 48px -16px oklch(0 0 0 / 0.8);
+        --line: oklch(1 0 0 / 0.07);
         color-scheme: dark;
-        font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
-        font-size: 13px;
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        background: #12141a;
-        color: #d8dee9;
         height: 100vh;
-        display: flex;
-        flex-direction: column;
         overflow: hidden;
-      }
-      header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px 12px;
-        background: #171a21;
-        border-bottom: 1px solid #2a2f3a;
-      }
-      header .brand {
-        font-weight: 700;
-        color: #7ee787;
-        margin-right: 12px;
-        letter-spacing: 0.04em;
-      }
-      header .stats {
-        margin-left: auto;
-        color: #a9b3c4;
-      }
-      header .stats b { color: #7ee787; font-weight: 600; }
-      button {
-        font: inherit;
-        background: #1d212b;
-        color: #d8dee9;
-        border: 1px solid #2a2f3a;
-        border-radius: 6px;
-        padding: 5px 12px;
-        cursor: pointer;
-      }
-      button:hover { background: #262c38; }
-      button.active {
-        border-color: #7ee787;
-        color: #7ee787;
-      }
-      button:disabled { opacity: 0.45; cursor: not-allowed; }
-      select, input {
-        font: inherit;
-        background: #1d212b;
-        color: #d8dee9;
-        border: 1px solid #2a2f3a;
-        border-radius: 6px;
-        padding: 5px 8px;
-      }
-      input { width: 110px; }
-      input.wide { width: 150px; }
-      main {
-        flex: 1;
-        display: flex;
-        min-height: 0;
-      }
-      #board-wrap {
-        flex: 1;
-        min-width: 0;
         position: relative;
-        background: #171a21;
+        background: #0c0c0d;
+        color: var(--ink);
+        font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+        font-size: 13px;
+        -webkit-font-smoothing: antialiased;
       }
-      #board { display: block; width: 100%; height: 100%; cursor: crosshair; }
-      #hint {
+      #board {
         position: absolute;
-        left: 12px;
-        bottom: 12px;
-        background: rgba(18, 20, 26, 0.85);
-        border: 1px solid #2a2f3a;
-        border-radius: 6px;
-        padding: 6px 10px;
-        color: #8a93a5;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: crosshair;
+      }
+      /* Decorative frame with corner brackets and ruler ticks, as in the hero art. */
+      .frame {
+        position: absolute;
+        inset: 16px;
+        border: 1px solid oklch(1 0 0 / 0.05);
         pointer-events: none;
-        max-width: 70%;
       }
-      aside {
-        width: 380px;
-        border-left: 1px solid #2a2f3a;
+      .frame .corner {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        margin: -1px;
+        border: 0 solid oklch(1 0 0 / 0.3);
+      }
+      .frame .tl { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; }
+      .frame .tr { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; }
+      .frame .bl { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; }
+      .frame .br { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; }
+      .frame .ruler {
+        position: absolute;
+        top: 0;
+        left: 80px;
+        right: 80px;
+        height: 6px;
+        --tick: oklch(1 0 0 / 0.1);
+        background:
+          repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 80px) top / 100% 6px no-repeat,
+          repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 10px) top / 100% 3px no-repeat;
+      }
+
+      .panel {
+        background: var(--panel);
+        border-radius: 14px;
+        box-shadow: var(--panel-shadow);
+      }
+      button {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 12.5px;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+        border: 0;
+        border-radius: 9px;
+        padding: 7px 12px;
+        cursor: pointer;
+        background: oklch(1 0 0 / 0.05);
+        color: var(--ink);
+        box-shadow: 0 0 0 1px oklch(1 0 0 / 0.09);
+      }
+      button:hover { background: oklch(1 0 0 / 0.09); }
+      button.active {
+        color: var(--signal);
+        box-shadow: 0 0 0 1px var(--signal);
+        background: oklch(0.8 0.12 225 / 0.09);
+      }
+      button.primary {
+        background: linear-gradient(#fbfbfb, #dfe0e2);
+        color: #1d1e21;
+        box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.6), 0 1px 2px oklch(0 0 0 / 0.3);
+      }
+      button.primary:hover { background: linear-gradient(#ffffff, #e8e9eb); }
+      button.danger {
+        color: var(--danger);
+        box-shadow: 0 0 0 1px oklch(0.63 0.2 23 / 0.5);
+      }
+      button:disabled { opacity: 0.4; cursor: not-allowed; }
+      select, input {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 12.5px;
+        background: oklch(1 0 0 / 0.05);
+        color: var(--ink);
+        border: 0;
+        border-radius: 8px;
+        padding: 6px 8px;
+        box-shadow: 0 0 0 1px oklch(1 0 0 / 0.09);
+        outline: none;
+      }
+      input:focus { box-shadow: 0 0 0 1px var(--signal); }
+      input.wide { width: 150px; }
+      label { color: var(--muted); }
+
+      /* HUD — top left card, one figure per row, as in Quorum. */
+      #hud {
+        position: absolute;
+        top: 28px;
+        left: 28px;
+        width: 240px;
+        padding: 12px 14px;
+        pointer-events: auto;
+      }
+      #hud .head {
         display: flex;
-        flex-direction: column;
-        background: #12141a;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 8px;
       }
-      .tabs {
+      #hud .brand {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-weight: 500;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-size: 12px;
+      }
+      #hud .brand::after { content: ' ·'; color: var(--signal); }
+      #hud .calendar {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      #hud .row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        padding: 3px 0;
+        font-size: 12.5px;
+      }
+      #hud .row .name { color: var(--muted); }
+      #hud .row .value {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-weight: 500;
+      }
+      #hud .row .value.signal { color: var(--signal); }
+      #hud .row .value.bad { color: var(--danger); }
+      #hud .row .note { font-size: 11px; color: var(--muted); margin-left: 8px; }
+
+      /* Toolbar — top right strip. */
+      #toolbar {
+        position: absolute;
+        top: 28px;
+        right: 28px;
         display: flex;
         gap: 6px;
-        padding: 8px 10px;
-        border-bottom: 1px solid #2a2f3a;
-        flex-shrink: 0;
+        padding: 7px;
       }
-      .tabs button.active {
-        border-color: #7ee787;
-        color: #7ee787;
+
+      /* Build dock — bottom center row of catalog buttons. */
+      #dock {
+        position: absolute;
+        bottom: 28px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 6px;
+        padding: 7px;
+        width: 860px;
+        max-width: calc(100vw - 56px);
       }
-      .badge {
-        background: #ff6b6b;
-        color: #12141a;
-        border-radius: 8px;
-        padding: 0 6px;
+      #dock button {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        align-items: flex-start;
+        padding: 6px 10px;
+        white-space: nowrap;
+      }
+      #dock button .price {
+        font-size: 10.5px;
+        color: var(--muted);
+      }
+      #dock button.active .price { color: var(--signal); }
+
+      /* Round Inbox-style button — bottom right. */
+      #inbox-btn {
+        position: absolute;
+        bottom: 156px;
+        right: 28px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        font-size: 15px;
+        padding: 0;
+      }
+      #inbox-btn.has-action {
+        color: var(--danger);
+        box-shadow: 0 0 0 1px var(--danger);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { box-shadow: 0 0 0 1px var(--danger); }
+        50% { box-shadow: 0 0 0 5px oklch(0.63 0.2 23 / 0.25); }
+      }
+      #inbox-btn .badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        background: var(--danger);
+        color: #0c0c0d;
+        border-radius: 9px;
+        padding: 1px 6px;
         font-size: 11px;
-        font-weight: 700;
+        font-weight: 600;
       }
-      .badge:empty { display: none; }
-      .hidden { display: none; }
-      #inspector-view {
-        max-height: 55%;
-        overflow-y: auto;
-        border-bottom: 1px solid #2a2f3a;
-        flex-shrink: 0;
+      #inbox-btn .badge:empty { display: none; }
+
+      /* Inspector — floating panel on the right. */
+      #inspector-panel {
+        position: absolute;
+        top: 92px;
+        right: 28px;
+        width: 360px;
+        max-height: calc(100vh - 320px);
+        display: none;
+        flex-direction: column;
+      }
+      #inspector-panel.open { display: flex; }
+      #inspector-panel .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px 8px;
+        font-weight: 600;
+      }
+      #inspector-panel .head .close {
+        padding: 2px 8px;
+        font-size: 12px;
       }
       #inspector {
-        padding: 12px 14px;
-      }
-      #tickets-view {
-        max-height: 55%;
         overflow-y: auto;
-        border-bottom: 1px solid #2a2f3a;
-        flex-shrink: 0;
+        padding: 0 14px 14px;
       }
-      #tickets {
-        padding: 12px 14px;
-      }
-      .ticket {
-        border: 1px solid #2a2f3a;
-        border-radius: 8px;
-        padding: 10px;
-        margin-bottom: 10px;
-      }
-      .ticket.breached { border-color: #ff6b6b; }
-      .ticket .client { color: #79c0ff; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
-      .ticket .title { font-weight: 600; margin: 4px 0; }
-      .ticket .symptom { color: #8a93a5; font-size: 12px; line-height: 1.5; }
-      .ticket .meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
-      .ticket .sla-ok { color: #7ee787; }
-      .ticket .sla-warn { color: #f0b429; }
-      .ticket .sla-breach { color: #ff6b6b; }
-      .ticket.resolved { opacity: 0.55; }
-      .ticket .reward { color: #7ee787; }
-      .ticket .penalty { color: #ff6b6b; }
       #inspector .row {
         display: flex;
         align-items: center;
@@ -159,15 +276,22 @@
         flex-wrap: wrap;
       }
       #inspector .iface {
-        border: 1px solid #2a2f3a;
-        border-radius: 6px;
-        padding: 8px;
+        border-radius: 10px;
+        padding: 9px;
         margin-bottom: 8px;
+        box-shadow: inset 0 0 0 1px var(--line);
       }
-      #inspector .iface .name { color: #79c0ff; margin-bottom: 6px; }
-      #inspector label { color: #8a93a5; }
-      #inspector .muted { color: #5a6372; }
-      #inspector .danger { border-color: #ff6b6b; color: #ff6b6b; }
+      #inspector .iface .name {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        color: var(--signal);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      #inspector .muted { color: var(--muted); }
+      #inspector .section {
+        font-weight: 600;
+        margin: 14px 0 8px;
+      }
       #inspector .rule {
         display: flex;
         align-items: center;
@@ -175,53 +299,159 @@
         margin-bottom: 4px;
         font-size: 12px;
       }
-      #inspector .rule .action-allow { color: #7ee787; }
-      #inspector .rule .action-deny { color: #ff6b6b; }
-      #log {
-        flex: 1;
-        overflow-y: auto;
-        padding: 10px 14px;
-        font-size: 12.5px;
-        line-height: 1.55;
-        min-height: 0;
+      #inspector .action-allow { color: var(--ok); }
+      #inspector .action-deny { color: var(--danger); }
+      #inspector .muted, .muted { color: var(--muted); }
+      #inspector .source-note { font-size: 11px; }
+
+      /* Tickets panel — opens over the board from the Inbox button. */
+      #tickets-panel {
+        position: absolute;
+        bottom: 156px;
+        right: 28px;
+        width: 380px;
+        max-height: calc(100vh - 290px);
+        display: none;
+        flex-direction: column;
       }
-      #log .warn { color: #f0b429; }
-      #log .alert { color: #ff6b6b; }
-      #log .info { color: #9fb0c3; }
-      #log .debug { color: #5a6372; }
-      #log .meta { color: #5a6372; }
+      #tickets-panel.open { display: flex; }
+      #tickets-panel .head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 14px 8px;
+        font-weight: 600;
+      }
+      #tickets {
+        overflow-y: auto;
+        padding: 0 14px 14px;
+      }
+      .ticket {
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+        box-shadow: inset 0 0 0 1px var(--line);
+      }
+      .ticket.breached { box-shadow: inset 0 0 0 1px var(--danger); }
+      .ticket .client {
+        color: var(--signal);
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .ticket .title { font-weight: 600; margin: 4px 0; }
+      .ticket .symptom { color: var(--muted); font-size: 12px; line-height: 1.5; }
+      .ticket .meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+      .ticket .sla-ok { color: var(--ok); }
+      .ticket .sla-warn { color: var(--warn); }
+      .ticket .sla-breach { color: var(--danger); }
+      .ticket.resolved { opacity: 0.5; }
+      .ticket .reward { color: var(--ok); }
+      .ticket .penalty { color: var(--danger); }
+
+      /* Event log — slim card, bottom left. */
+      #log-panel {
+        position: absolute;
+        bottom: 148px;
+        left: 28px;
+        width: 340px;
+        max-height: 150px;
+        overflow: hidden;
+        padding: 8px 12px;
+        font-size: 11.5px;
+        line-height: 1.5;
+        opacity: 0.92;
+      }
+      #log-panel .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #log-panel .warn { color: var(--warn); }
+      #log-panel .alert { color: var(--danger); }
+      #log-panel .info { color: var(--muted); }
+      #log-panel .debug { color: oklch(1 0 0 / 0.35); }
+      #log-panel .meta { color: oklch(1 0 0 / 0.35); }
+
+      /* Toast — top center, one line, fades out. */
+      #toast {
+        position: absolute;
+        top: 30px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 8px 14px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 12px;
+        opacity: 0;
+        transition: opacity 0.25s ease;
+        pointer-events: none;
+        max-width: 60vw;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #toast.show { opacity: 1; }
+
+      #hint {
+        position: absolute;
+        bottom: 172px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        color: var(--muted);
+        pointer-events: none;
+      }
+      .hidden { display: none; }
     </style>
   </head>
   <body>
-    <header>
-      <span class="brand">NetCorp</span>
-      <button id="mode-select">Select</button>
-      <button id="mode-wire">Wire</button>
-      <select id="place-def" title="Device to place"></select>
-      <button id="mode-place">Place</button>
-      <button id="clock" title="Game clock">⏸ pause</button>
-      <span class="stats" id="stats"></span>
-    </header>
-    <main>
-      <div id="board-wrap">
-        <canvas id="board"></canvas>
-        <div id="hint"></div>
+    <canvas id="board"></canvas>
+    <div class="frame">
+      <span class="ruler"></span>
+      <span class="corner tl"></span><span class="corner tr"></span>
+      <span class="corner bl"></span><span class="corner br"></span>
+    </div>
+
+    <div id="hud" class="panel">
+      <div class="head">
+        <span class="brand">NetCorp</span>
+        <span class="calendar" id="hud-calendar">D1 00:00</span>
       </div>
-      <aside>
-        <div class="tabs">
-          <button id="tab-inspector" class="active">Inspector</button>
-          <button id="tab-tickets">Tickets <span id="ticket-badge" class="badge"></span></button>
-        </div>
-        <div id="inspector-view">
-          <div id="inspector"></div>
-        </div>
-        <div id="tickets-view" class="hidden">
-          <div id="tickets"></div>
-        </div>
-        <h2>Event log</h2>
-        <div id="log"></div>
-      </aside>
-    </main>
+      <div class="row"><span class="name">Cash</span><span class="value signal" id="hud-cash">$0</span></div>
+      <div class="row"><span class="name">Reputation</span><span class="value" id="hud-rep">0</span></div>
+      <div class="row"><span class="name">Insight</span><span class="value" id="hud-insight">0</span></div>
+      <div class="row"><span class="name">Devices</span><span class="value" id="hud-devices">0</span></div>
+    </div>
+
+    <div id="toolbar" class="panel">
+      <button id="mode-select">Select (S)</button>
+      <button id="mode-wire">Wire (W)</button>
+      <button id="mode-place">Place (P)</button>
+      <button id="clock">Pause</button>
+    </div>
+
+    <div id="dock" class="panel"></div>
+
+    <div id="inspector-panel" class="panel">
+      <div class="head">
+        <span>Inspector</span>
+        <button class="close" id="inspector-close">Esc</button>
+      </div>
+      <div id="inspector"></div>
+    </div>
+
+    <div id="tickets-panel" class="panel">
+      <div class="head">
+        <span>Tickets</span>
+        <button class="close" id="tickets-close">✕</button>
+      </div>
+      <div id="tickets"></div>
+    </div>
+
+    <button id="inbox-btn" title="Tickets (T)">✉<span class="badge" id="ticket-badge"></span></button>
+
+    <div id="log-panel"></div>
+    <div id="toast" class="panel"></div>
+    <div id="hint"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

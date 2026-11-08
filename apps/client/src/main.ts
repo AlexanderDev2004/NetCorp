@@ -1,10 +1,12 @@
 /**
- * The interactive Board editor.
+ * The interactive Board editor, styled after Quorum (playquorum.dev):
+ * HUD top-left, toolbar top-right, build dock at the bottom, a round Inbox
+ * button bottom-right, and floating Inspector / Tickets panels.
  *
  * Every state change goes through sim Commands; the UI only renders state and
  * forwards input. Modes: select (click/drag, inspect), place (click to buy +
- * place from the catalog dropdown), wire (click two devices to link their
- * first free interfaces).
+ * place the dock selection), wire (click two devices to link their first free
+ * interfaces).
  */
 import { advanceTicks, applyCommand, createWorld, type Device, type World } from '@netcorp/sim';
 import { CAREER_START, DEVICE_CATALOG, catalogAsRecord } from '@netcorp/data';
@@ -14,69 +16,108 @@ world.cash = CAREER_START.startingCash + 1000; // demo funds for the sandbox
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board');
 const ctx = canvas === null ? null : canvas.getContext('2d');
-const hint = document.querySelector<HTMLDivElement>('#hint');
-const statsEl = document.querySelector<HTMLSpanElement>('#stats');
+const hintEl = document.querySelector<HTMLDivElement>('#hint');
+const toastEl = document.querySelector<HTMLDivElement>('#toast');
+const logEl = document.querySelector<HTMLDivElement>('#log-panel');
+const inspectorPanel = document.querySelector<HTMLDivElement>('#inspector-panel');
 const inspectorEl = document.querySelector<HTMLDivElement>('#inspector');
-const logEl = document.querySelector<HTMLDivElement>('#log');
-const placeDef = document.querySelector<HTMLSelectElement>('#place-def');
+const ticketsPanel = document.querySelector<HTMLDivElement>('#tickets-panel');
+const dockEl = document.querySelector<HTMLDivElement>('#dock');
+const inboxBtn = document.querySelector<HTMLButtonElement>('#inbox-btn');
 
 if (canvas === null || ctx === null) throw new Error('board canvas missing');
 
-// Fill the catalog dropdown.
-for (const def of DEVICE_CATALOG) {
-  const option = document.createElement('option');
-  option.value = def.id;
-  option.textContent = `${def.name} — $${def.price}`;
-  placeDef?.append(option);
-}
-
 type Mode = 'select' | 'place' | 'wire';
 let mode: Mode = 'select';
+let selectedDefId: string | null = DEVICE_CATALOG[0]?.id ?? null;
 let selectedId: string | null = null;
 let wireFromId: string | null = null;
-let asideTab: 'inspector' | 'tickets' = 'inspector';
+let ticketsOpen = false;
 let clockRunning = false;
 let mouse = { x: 0, y: 0 };
 let drag: { deviceId: string; dx: number; dy: number; moved: boolean } | null = null;
 
-const KIND_COLORS: Record<string, string> = {
-  'router-soho': '#7ee787',
-  'router-edge': '#7ee787',
-  firewall: '#ff6b6b',
-  'switch-unmanaged': '#79c0ff',
-  'switch-managed': '#79c0ff',
-  'access-point': '#d2a8ff',
-  desktop: '#e3b341',
-  server: '#e3b341',
-  printer: '#9fb0c3',
-  ups: '#9fb0c3',
+/* Quorum palette (from playquorum.dev source). */
+const C = {
+  bg: '#0c0c0d',
+  grid: 'oklch(1 0 0 / 0.03)',
+  cableEdge: '#7a818c',
+  cable: '#2b2e33',
+  panel: '#18191c',
+  ink: '#eaebec',
+  muted: '#8b9099',
+  signal: 'oklch(0.8 0.12 225)',
+  danger: '#e5484d',
+  warn: '#f0b429',
+};
+
+/** Small accent per device kind, shown as a dot on the node card. */
+const KIND_ACCENTS: Record<string, string> = {
+  'router-soho': 'oklch(0.8 0.14 145)',
+  'router-edge': 'oklch(0.8 0.14 145)',
+  firewall: 'oklch(0.68 0.19 25)',
+  'switch-unmanaged': C.signal,
+  'switch-managed': C.signal,
+  'access-point': 'oklch(0.75 0.14 300)',
+  desktop: 'oklch(0.8 0.13 85)',
+  server: 'oklch(0.8 0.13 85)',
+  printer: C.muted,
+  ups: C.muted,
 };
 
 const MODE_HINTS: Record<Mode, string> = {
-  select: 'Click a device to inspect · drag to move · Esc cancels',
-  place: 'Click an empty spot to place the selected device',
-  wire: 'Click device A, then device B — their first free interfaces are linked',
+  select: 'click a node to inspect · drag to move · esc closes',
+  place: 'click the board to place the dock selection',
+  wire: 'click node A, then node B — first free ports are linked',
 };
+
+// ---- Build dock ----
+
+if (dockEl !== null) {
+  for (const def of DEVICE_CATALOG) {
+    const button = document.createElement('button');
+    button.dataset.def = def.id;
+    button.innerHTML = `<span>${def.name}</span><span class="price">$${def.price}</span>`;
+    button.addEventListener('click', () => {
+      selectedDefId = def.id;
+      setMode('place');
+    });
+    dockEl.append(button);
+  }
+}
 
 // ---- Command helpers ----
 
 function run(command: Parameters<typeof applyCommand>[1]): void {
-  applyCommand(world, command);
+  const events = applyCommand(world, command);
+  const last = events.at(-1);
+  if (last !== undefined && (last.level === 'warn' || last.level === 'alert')) {
+    showToast(last.text);
+  }
   render();
 }
 
-// ---- Rendering ----
+let toastTimer: number | undefined;
+function showToast(text: string): void {
+  if (toastEl === null) return;
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 3200);
+}
+
+// ---- Board rendering ----
 
 function deviceBoxWidth(device: Device): number {
-  if (ctx === null) return 110;
-  ctx.font = '13px ui-monospace, monospace';
-  return Math.max(110, ctx.measureText(device.name).width + 26);
+  if (ctx === null) return 120;
+  ctx.font = "500 12.5px 'Geist Mono', ui-monospace, monospace";
+  return Math.max(120, ctx.measureText(device.name).width + 34);
 }
 
 function deviceAt(x: number, y: number): Device | undefined {
   return Object.values(world.devices).find((device) => {
     const half = deviceBoxWidth(device) / 2;
-    return x >= device.x - half && x <= device.x + half && y >= device.y - 24 && y <= device.y + 24;
+    return x >= device.x - half && x <= device.x + half && y >= device.y - 26 && y <= device.y + 26;
   });
 }
 
@@ -88,28 +129,51 @@ function drawBoard(): void {
     canvas.width = width;
     canvas.height = height;
   }
-  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, width, height);
 
-  // Links.
-  ctx.strokeStyle = '#3b4354';
-  ctx.lineWidth = 2;
+  // Fine grid.
+  ctx.strokeStyle = C.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let gx = 0; gx < width; gx += 32) {
+    ctx.moveTo(gx + 0.5, 0);
+    ctx.lineTo(gx + 0.5, height);
+  }
+  for (let gy = 0; gy < height; gy += 32) {
+    ctx.moveTo(0, gy + 0.5);
+    ctx.lineTo(width, gy + 0.5);
+  }
+  ctx.stroke();
+
+  // Cables: dark core with a lighter edge, like the hero art.
   for (const link of world.links) {
     const a = world.devices[link.a.deviceId];
     const b = world.devices[link.b.deviceId];
     if (a === undefined || b === undefined) continue;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = C.cableEdge;
+    ctx.lineWidth = 5.6;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.strokeStyle = C.cable;
+    ctx.lineWidth = 3.6;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
   }
 
-  // Pending wire preview.
+  // Pending wire preview in signal color.
   if (mode === 'wire' && wireFromId !== null) {
     const from = world.devices[wireFromId];
     if (from !== undefined) {
       ctx.save();
-      ctx.strokeStyle = '#7ee787';
+      ctx.strokeStyle = C.signal;
       ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.lineTo(mouse.x, mouse.y);
@@ -118,51 +182,68 @@ function drawBoard(): void {
     }
   }
 
-  // Devices.
-  ctx.font = '13px ui-monospace, monospace';
-  ctx.textAlign = 'center';
+  // Node cards: dark panels with a ring, kind dot, name, and address.
   for (const device of Object.values(world.devices)) {
-    const color = KIND_COLORS[device.kind] ?? '#8a93a5';
+    const accent = KIND_ACCENTS[device.kind] ?? C.muted;
     const boxWidth = deviceBoxWidth(device);
     const selected = device.id === selectedId;
     const wireSource = device.id === wireFromId;
 
-    ctx.fillStyle = '#1d212b';
-    ctx.strokeStyle = selected ? '#ffffff' : wireSource ? '#7ee787' : color;
-    ctx.lineWidth = selected || wireSource ? 3 : 2;
+    ctx.font = "500 12.5px 'Geist Mono', ui-monospace, monospace";
+    ctx.fillStyle = C.panel;
+    ctx.strokeStyle = selected ? C.signal : wireSource ? C.signal : 'oklch(1 0 0 / 0.12)';
+    ctx.lineWidth = selected || wireSource ? 1.6 : 1;
     ctx.beginPath();
-    ctx.roundRect(device.x - boxWidth / 2, device.y - 24, boxWidth, 48, 8);
+    ctx.roundRect(device.x - boxWidth / 2, device.y - 26, boxWidth, 52, 10);
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = color;
-    ctx.fillText(device.name, device.x, device.y + 4);
+    // Kind dot.
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.arc(device.x - boxWidth / 2 + 13, device.y - 12, 3.2, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Show the management IPv4 under the box if configured.
+    ctx.fillStyle = C.ink;
+    ctx.textAlign = 'left';
+    ctx.fillText(device.name, device.x - boxWidth / 2 + 24, device.y - 8);
+
     const mgmt = device.interfaces.find((iface) => iface.ipv4 !== undefined)?.ipv4;
-    if (mgmt !== undefined) {
-      ctx.fillStyle = '#5a6372';
-      ctx.font = '11px ui-monospace, monospace';
-      ctx.fillText(`${mgmt.address}/${mgmt.prefix}`, device.x, device.y + 38);
-      ctx.font = '13px ui-monospace, monospace';
-    }
+    ctx.fillStyle = C.muted;
+    ctx.font = "500 11px 'Geist Mono', ui-monospace, monospace";
+    ctx.fillText(
+      mgmt === undefined ? device.kind : `${mgmt.address}/${mgmt.prefix}`,
+      device.x - boxWidth / 2 + 12,
+      device.y + 14,
+    );
+    ctx.textAlign = 'center';
   }
 }
 
-function renderStats(): void {
-  if (statsEl === null) return;
-  statsEl.innerHTML =
-    `cash <b>$${world.cash}</b> · rep <b>${world.reputation}</b> · insight <b>${world.insight}</b>` +
-    ` · tick ${world.tick} · devices ${Object.keys(world.devices).length}`;
-}
+// ---- Panels ----
 
-function renderHint(): void {
-  if (hint === null) return;
-  let text = MODE_HINTS[mode];
-  if (mode === 'wire' && wireFromId !== null) {
-    text = `From ${world.devices[wireFromId]?.name ?? '?'} — click the destination device`;
+function renderHud(): void {
+  const cash = document.querySelector<HTMLSpanElement>('#hud-cash');
+  const rep = document.querySelector<HTMLSpanElement>('#hud-rep');
+  const insight = document.querySelector<HTMLSpanElement>('#hud-insight');
+  const devices = document.querySelector<HTMLSpanElement>('#hud-devices');
+  const calendar = document.querySelector<HTMLSpanElement>('#hud-calendar');
+  if (cash !== null) {
+    cash.textContent = `$${world.cash}`;
+    cash.classList.toggle('bad', world.cash < 0);
+    cash.classList.toggle('signal', world.cash >= 0);
   }
-  hint.textContent = text;
+  if (rep !== null) {
+    rep.textContent = String(world.reputation);
+    rep.classList.toggle('bad', world.reputation < 0);
+  }
+  if (insight !== null) insight.textContent = String(world.insight);
+  if (devices !== null) devices.textContent = String(Object.keys(world.devices).length);
+  if (calendar !== null) {
+    const day = Math.floor(world.tick / 24) + 1;
+    const hour = world.tick % 24;
+    calendar.textContent = `D${day} ${String(hour).padStart(2, '0')}:00`;
+  }
 }
 
 function esc(value: string): string {
@@ -170,12 +251,10 @@ function esc(value: string): string {
 }
 
 function renderInspector(): void {
-  if (inspectorEl === null) return;
+  if (inspectorPanel === null || inspectorEl === null) return;
   const device = selectedId === null ? undefined : world.devices[selectedId];
-  if (device === undefined) {
-    inspectorEl.innerHTML = `<span class="muted">Nothing selected. ${esc(MODE_HINTS.select)}</span>`;
-    return;
-  }
+  inspectorPanel.classList.toggle('open', device !== undefined);
+  if (device === undefined) return;
 
   const interfaces = device.interfaces
     .map((iface) => {
@@ -193,7 +272,7 @@ function renderInspector(): void {
             : '';
       return `
         <div class="iface">
-          <div class="name">${esc(iface.name)} · ${esc(iface.kind)}${wired ? ' · wired' : ' · <span class="muted">free</span>'}</div>
+          <div class="name">${esc(iface.name)} · ${esc(iface.kind)}${wired ? ' · wired' : ' · free'}</div>
           <div class="row">
             <label>IPv4</label>
             <input class="wide ip-address" data-iface="${esc(iface.name)}" placeholder="e.g. 10.0.0.10"
@@ -209,7 +288,7 @@ function renderInspector(): void {
               value="${iface.ipv4Gateway === undefined ? '' : esc(iface.ipv4Gateway)}" />
             ${iface.kind !== 'wan' ? `<button class="dhcp-request" data-iface="${esc(iface.name)}">request DHCP</button>` : ''}
           </div>
-          ${source !== '' ? `<div class="row muted">${source}</div>` : ''}
+          ${source !== '' ? `<div class="row muted source-note">${source}</div>` : ''}
         </div>`;
     })
     .join('');
@@ -240,13 +319,7 @@ function renderInspector(): void {
 
   const rules = device.config.firewallRules
     .map((rule) => {
-      const desc = [
-        rule.srcCidr ?? '*',
-        '→',
-        rule.dstCidr ?? '*',
-        rule.dstPort !== undefined ? `:${rule.dstPort}` : '',
-        rule.protocol ?? '',
-      ]
+      const desc = [rule.srcCidr ?? '*', '→', rule.dstCidr ?? '*', rule.dstPort !== undefined ? `:${rule.dstPort}` : '', rule.protocol ?? '']
         .join(' ')
         .trim();
       return `
@@ -260,7 +333,6 @@ function renderInspector(): void {
 
   inspectorEl.innerHTML = `
     <div class="row">
-      <b>${esc(device.name)}</b>
       <span class="muted">${esc(device.kind)} · ${esc(device.firmware)}</span>
     </div>
     ${interfaces}
@@ -269,14 +341,10 @@ function renderInspector(): void {
       <input class="wide ping-target" placeholder="target address" />
       <button class="ping-run">run</button>
     </div>
-    <div class="row" style="margin-top:12px">
-      <b>DHCP server</b>
-    </div>
+    <div class="section">DHCP server</div>
     ${pools || '<div class="muted">No pools — this device serves no addresses.</div>'}
     ${poolForm}
-    <div class="row" style="margin-top:12px">
-      <b>Firewall</b>
-    </div>
+    <div class="section">Firewall</div>
     ${rules || '<div class="muted">No rules — all traffic passes.</div>'}
     <div class="row">
       <select class="fw-action">
@@ -288,7 +356,7 @@ function renderInspector(): void {
       <input class="fw-port" style="width:64px" placeholder="port" />
       <button class="fw-add">add rule</button>
     </div>
-    <div class="row" style="margin-top:12px">
+    <div class="row" style="margin-top:14px">
       <button class="danger device-delete">delete device</button>
     </div>
   `;
@@ -387,19 +455,14 @@ function bindInspector(device: Device): void {
   });
 }
 
-function renderLog(): void {
-  if (logEl === null) return;
-  logEl.innerHTML = world.log
-    .map((entry) => `<div class="${entry.level}"><span class="meta">[t${entry.tick}] ${esc(entry.source)}</span> ${esc(entry.text)}</div>`)
-    .reverse()
-    .join('');
-}
-
 function renderTickets(): void {
   const ticketsEl = document.querySelector<HTMLDivElement>('#tickets');
   const badge = document.querySelector<HTMLSpanElement>('#ticket-badge');
-  if (badge !== null) {
-    badge.textContent = String(world.tickets.filter((t) => t.status === 'open').length);
+  const openCount = world.tickets.filter((t) => t.status === 'open');
+  if (badge !== null) badge.textContent = String(openCount.length);
+  if (inboxBtn !== null) {
+    // Quorum's Inbox: badge turns red and the button pulses when action waits.
+    inboxBtn.classList.toggle('has-action', openCount.some((t) => t.breached));
   }
   if (ticketsEl === null) return;
 
@@ -408,7 +471,6 @@ function renderTickets(): void {
     const bOpen = b.status === 'open' ? 0 : 1;
     if (aOpen !== bOpen) return aOpen - bOpen;
     if (a.status === 'open' && b.status === 'open') {
-      // Most urgent first: breached, then least SLA time left.
       const aRem = a.openedTick + a.slaTicks - world.tick;
       const bRem = b.openedTick + b.slaTicks - world.tick;
       if (a.breached !== b.breached) return a.breached ? -1 : 1;
@@ -452,36 +514,43 @@ function renderTickets(): void {
   }
 }
 
-function setAsideTab(tab: 'inspector' | 'tickets'): void {
-  asideTab = tab;
-  render();
+function renderLog(): void {
+  if (logEl === null) return;
+  const recent = world.log.slice(-6);
+  logEl.innerHTML = recent
+    .map((entry) => `<div class="log-line ${entry.level}"><span class="meta">[t${entry.tick}]</span> ${esc(entry.text)}</div>`)
+    .join('');
+}
+
+function renderHint(): void {
+  if (hintEl === null) return;
+  let text = MODE_HINTS[mode];
+  if (mode === 'wire' && wireFromId !== null) {
+    text = `from ${world.devices[wireFromId]?.name ?? '?'} — click the destination`;
+  }
+  hintEl.textContent = text;
 }
 
 function render(): void {
   drawBoard();
-  renderStats();
-  renderHint();
+  renderHud();
   renderInspector();
   renderTickets();
   renderLog();
+  renderHint();
 
-  const inspectorView = document.querySelector<HTMLDivElement>('#inspector-view');
-  const ticketsView = document.querySelector<HTMLDivElement>('#tickets-view');
-  inspectorView?.classList.toggle('hidden', asideTab !== 'inspector');
-  ticketsView?.classList.toggle('hidden', asideTab !== 'tickets');
-  document.querySelector('#tab-inspector')?.classList.toggle('active', asideTab === 'inspector');
-  document.querySelector('#tab-tickets')?.classList.toggle('active', asideTab === 'tickets');
-
-  const clockButton = document.querySelector<HTMLButtonElement>('#clock');
-  if (clockButton !== null) {
-    clockButton.textContent = clockRunning ? '⏸ pause' : '▶ run';
-    clockButton.classList.toggle('active', clockRunning);
+  if (dockEl !== null) {
+    for (const button of dockEl.querySelectorAll<HTMLButtonElement>('button[data-def]')) {
+      button.classList.toggle('active', mode === 'place' && button.dataset.def === selectedDefId);
+    }
   }
-
   for (const id of ['mode-select', 'mode-wire', 'mode-place']) {
     const button = document.querySelector<HTMLButtonElement>(`#${id}`);
     if (button !== null) button.classList.toggle('active', id === `mode-${mode}`);
   }
+  const clockButton = document.querySelector<HTMLButtonElement>('#clock');
+  if (clockButton !== null) clockButton.textContent = clockRunning ? 'Pause' : 'Run';
+  if (ticketsPanel !== null) ticketsPanel.classList.toggle('open', ticketsOpen);
 }
 
 // ---- Canvas input ----
@@ -496,7 +565,7 @@ canvas.addEventListener('mousemove', (event) => {
     if (device.x !== x || device.y !== y) {
       drag.moved = true;
       run({ type: 'moveDevice', deviceId: device.id, x, y });
-      return; // run() re-renders
+      return;
     }
   }
   if (mode === 'wire' && wireFromId !== null) drawBoard();
@@ -517,6 +586,7 @@ canvas.addEventListener('mouseup', (event) => {
   if (mode === 'select') {
     if (!wasDrag && hit !== undefined) {
       selectedId = hit.id;
+      ticketsOpen = false;
     } else if (!wasDrag && hit === undefined) {
       selectedId = null;
     }
@@ -525,11 +595,10 @@ canvas.addEventListener('mouseup', (event) => {
   }
 
   if (mode === 'place') {
-    if (hit === undefined) {
-      const defId = placeDef?.value ?? '';
-      const def = world.catalog[defId];
+    if (hit === undefined && selectedDefId !== null) {
+      const def = world.catalog[selectedDefId];
       if (def !== undefined) {
-        run({ type: 'placeDevice', defId, name: `${def.kind}-${Object.keys(world.devices).length + 1}`, x: event.offsetX, y: event.offsetY });
+        run({ type: 'placeDevice', defId: selectedDefId, name: `${def.kind}-${Object.keys(world.devices).length + 1}`, x: event.offsetX, y: event.offsetY });
         selectedId = Object.keys(world.devices).at(-1) ?? null;
       }
     }
@@ -545,14 +614,13 @@ canvas.addEventListener('mouseup', (event) => {
       selectedId = hit.id;
     } else if (hit.id !== wireFromId) {
       const from = world.devices[wireFromId];
-      const to = hit;
       const aIface = from?.interfaces.find((iface) => isFree(from.id, iface.name));
-      const bIface = to.interfaces.find((iface) => isFree(to.id, iface.name));
+      const bIface = hit.interfaces.find((iface) => isFree(hit.id, iface.name));
       if (from !== undefined && aIface !== undefined && bIface !== undefined) {
         run({
           type: 'wireLink',
           a: { deviceId: from.id, interfaceName: aIface.name },
-          b: { deviceId: to.id, interfaceName: bIface.name },
+          b: { deviceId: hit.id, interfaceName: bIface.name },
         });
       }
       wireFromId = null;
@@ -574,34 +642,32 @@ canvas.addEventListener('contextmenu', (event) => {
   setMode('select');
 });
 
-window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    wireFromId = null;
-    setMode('select');
-  }
-  if (event.key === 'Delete' && selectedId !== null) {
-    run({ type: 'deleteDevice', deviceId: selectedId });
-    selectedId = null;
-  }
-});
-
-// ---- Toolbar ----
+// ---- Toolbar, dock, panels, keys ----
 
 function setMode(next: Mode): void {
   mode = next;
   if (next !== 'wire') wireFromId = null;
+  if (next !== 'select') selectedId = null;
   render();
 }
 
 document.querySelector('#mode-select')?.addEventListener('click', () => setMode('select'));
 document.querySelector('#mode-wire')?.addEventListener('click', () => setMode('wire'));
 document.querySelector('#mode-place')?.addEventListener('click', () => setMode('place'));
-placeDef?.addEventListener('change', () => setMode('place'));
-document.querySelector('#tab-inspector')?.addEventListener('click', () => setAsideTab('inspector'));
-document.querySelector('#tab-tickets')?.addEventListener('click', () => setAsideTab('tickets'));
+document.querySelector('#inspector-close')?.addEventListener('click', () => {
+  selectedId = null;
+  render();
+});
+inboxBtn?.addEventListener('click', () => {
+  ticketsOpen = !ticketsOpen;
+  if (ticketsOpen) selectedId = null;
+  render();
+});
+document.querySelector('#tickets-close')?.addEventListener('click', () => {
+  ticketsOpen = false;
+  render();
+});
 
-// Game clock: ticks the sim while running, so SLAs count down and ambient
-// tickets arrive. Paused by default for deterministic setup.
 const clockButton = document.querySelector<HTMLButtonElement>('#clock');
 clockButton?.addEventListener('click', () => {
   clockRunning = !clockRunning;
@@ -613,12 +679,39 @@ window.setInterval(() => {
   render();
 }, 500);
 
+window.addEventListener('keydown', (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  const key = event.key.toLowerCase();
+  if (key === 's') setMode('select');
+  if (key === 'w') setMode('wire');
+  if (key === 'p') setMode('place');
+  if (key === 't') {
+    ticketsOpen = !ticketsOpen;
+    render();
+  }
+  if (event.code === 'Space') {
+    event.preventDefault();
+    clockRunning = !clockRunning;
+    render();
+  }
+  if (key === 'escape') {
+    wireFromId = null;
+    selectedId = null;
+    ticketsOpen = false;
+    setMode('select');
+  }
+  if (key === 'delete' && selectedId !== null) {
+    run({ type: 'deleteDevice', deviceId: selectedId });
+    selectedId = null;
+  }
+});
+
 window.addEventListener('resize', () => render());
 
 // Seed the board with a small starter LAN.
-run({ type: 'placeDevice', defId: 'router-soho', name: 'gw1', x: 420, y: 110 });
-run({ type: 'placeDevice', defId: 'switch-unmanaged', name: 'sw1', x: 420, y: 300 });
-run({ type: 'placeDevice', defId: 'desktop', name: 'cashier-pc', x: 220, y: 460 });
+run({ type: 'placeDevice', defId: 'router-soho', name: 'gw1', x: 480, y: 180 });
+run({ type: 'placeDevice', defId: 'switch-unmanaged', name: 'sw1', x: 480, y: 360 });
+run({ type: 'placeDevice', defId: 'desktop', name: 'cashier-pc', x: 260, y: 540 });
 run({
   type: 'wireLink',
   a: { deviceId: Object.keys(world.devices)[0] ?? '', interfaceName: 'eth0' },
@@ -633,9 +726,8 @@ run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[0] ?? '', interfaceN
 run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[2] ?? '', interfaceName: 'eth0', address: '192.168.10.50', prefix: 24 });
 
 // Dev affordance: URL params reproduce UI states for captures/tests.
-// ?select=<device name> preselects a device; ?mode=wire|place sets the mode;
-// ?incident=rogue-dhcp&target=<name>&lease=<name> injects the incident, then
-// makes the named device request a lease (the symptom appears on screen).
+// ?select=<name>, ?mode=wire|place, ?tab=tickets, ?clock=run,
+// ?incident=rogue-dhcp&target=<name>&lease=<name>, ?fast=<ticks>
 const params = new URLSearchParams(window.location.search);
 const selectName = params.get('select');
 if (selectName !== null) {
@@ -644,7 +736,7 @@ if (selectName !== null) {
 }
 const modeParam = params.get('mode');
 if (modeParam === 'wire' || modeParam === 'place') mode = modeParam;
-if (params.get('tab') === 'tickets') asideTab = 'tickets';
+if (params.get('tab') === 'tickets') ticketsOpen = true;
 if (params.get('clock') === 'run') clockRunning = true;
 if (params.get('incident') === 'rogue-dhcp') {
   const target =
