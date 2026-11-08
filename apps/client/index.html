@@ -8,67 +8,172 @@
       :root {
         color-scheme: dark;
         font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+        font-size: 13px;
       }
+      * { box-sizing: border-box; }
       body {
         margin: 0;
         background: #12141a;
         color: #d8dee9;
-        display: flex;
         height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
-      #board {
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: #171a21;
+        border-bottom: 1px solid #2a2f3a;
+      }
+      header .brand {
+        font-weight: 700;
+        color: #7ee787;
+        margin-right: 12px;
+        letter-spacing: 0.04em;
+      }
+      header .stats {
+        margin-left: auto;
+        color: #a9b3c4;
+      }
+      header .stats b { color: #7ee787; font-weight: 600; }
+      button {
+        font: inherit;
+        background: #1d212b;
+        color: #d8dee9;
+        border: 1px solid #2a2f3a;
+        border-radius: 6px;
+        padding: 5px 12px;
+        cursor: pointer;
+      }
+      button:hover { background: #262c38; }
+      button.active {
+        border-color: #7ee787;
+        color: #7ee787;
+      }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      select, input {
+        font: inherit;
+        background: #1d212b;
+        color: #d8dee9;
+        border: 1px solid #2a2f3a;
+        border-radius: 6px;
+        padding: 5px 8px;
+      }
+      input { width: 110px; }
+      input.wide { width: 150px; }
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      #board-wrap {
         flex: 1;
         min-width: 0;
-        height: 100vh;
-        display: block;
+        position: relative;
         background: #171a21;
       }
+      #board { display: block; width: 100%; height: 100%; cursor: crosshair; }
+      #hint {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        background: rgba(18, 20, 26, 0.85);
+        border: 1px solid #2a2f3a;
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: #8a93a5;
+        pointer-events: none;
+        max-width: 70%;
+      }
       aside {
-        width: 340px;
+        width: 380px;
         border-left: 1px solid #2a2f3a;
         display: flex;
         flex-direction: column;
+        background: #12141a;
       }
       aside h2 {
-        font-size: 13px;
+        font-size: 11px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
         color: #8a93a5;
         margin: 0;
         padding: 10px 14px;
         border-bottom: 1px solid #2a2f3a;
+        flex-shrink: 0;
       }
-      #stats {
-        padding: 10px 14px;
+      #inspector {
+        max-height: 55%;
+        overflow-y: auto;
+        padding: 12px 14px;
         border-bottom: 1px solid #2a2f3a;
-        font-size: 13px;
-        color: #a9b3c4;
+        flex-shrink: 0;
       }
-      #stats b {
-        color: #7ee787;
-        font-weight: 600;
+      #inspector .row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
       }
+      #inspector .iface {
+        border: 1px solid #2a2f3a;
+        border-radius: 6px;
+        padding: 8px;
+        margin-bottom: 8px;
+      }
+      #inspector .iface .name { color: #79c0ff; margin-bottom: 6px; }
+      #inspector label { color: #8a93a5; }
+      #inspector .muted { color: #5a6372; }
+      #inspector .danger { border-color: #ff6b6b; color: #ff6b6b; }
+      #inspector .rule {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 4px;
+        font-size: 12px;
+      }
+      #inspector .rule .action-allow { color: #7ee787; }
+      #inspector .rule .action-deny { color: #ff6b6b; }
       #log {
         flex: 1;
         overflow-y: auto;
         padding: 10px 14px;
         font-size: 12.5px;
         line-height: 1.55;
+        min-height: 0;
       }
       #log .warn { color: #f0b429; }
       #log .alert { color: #ff6b6b; }
       #log .info { color: #9fb0c3; }
+      #log .debug { color: #5a6372; }
       #log .meta { color: #5a6372; }
     </style>
   </head>
   <body>
-    <canvas id="board" width="1200" height="800"></canvas>
-    <aside>
-      <h2>NetCorp — The Garage</h2>
-      <div id="stats"></div>
-      <h2>Event log</h2>
-      <div id="log"></div>
-    </aside>
+    <header>
+      <span class="brand">NetCorp</span>
+      <button id="mode-select">Select</button>
+      <button id="mode-wire">Wire</button>
+      <select id="place-def" title="Device to place"></select>
+      <button id="mode-place">Place</button>
+      <span class="stats" id="stats"></span>
+    </header>
+    <main>
+      <div id="board-wrap">
+        <canvas id="board"></canvas>
+        <div id="hint"></div>
+      </div>
+      <aside>
+        <h2>Inspector</h2>
+        <div id="inspector"></div>
+        <h2>Event log</h2>
+        <div id="log"></div>
+      </aside>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

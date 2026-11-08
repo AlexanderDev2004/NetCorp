@@ -124,6 +124,14 @@ export function applyCommand(world: World, command: Command): Event[] {
       break;
     }
 
+    case 'moveDevice': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      device.x = command.x;
+      device.y = command.y;
+      break;
+    }
+
     case 'wireLink': {
       const problem = endpointIsFree(world, command.a) ?? endpointIsFree(world, command.b);
       if (problem !== undefined) {

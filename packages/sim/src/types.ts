@@ -138,6 +138,7 @@ export interface World {
 export type Command =
   | { type: 'placeDevice'; defId: string; name?: string; x: number; y: number }
   | { type: 'deleteDevice'; deviceId: string }
+  | { type: 'moveDevice'; deviceId: string; x: number; y: number }
   | { type: 'wireLink'; a: Endpoint; b: Endpoint; media?: Link['media'] }
   | { type: 'unwireLink'; linkId: string }
   | { type: 'setIpv4'; deviceId: string; interfaceName: string; address?: string; prefix?: number }
