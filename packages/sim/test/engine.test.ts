@@ -76,7 +76,7 @@ describe('NetCorp sim', () => {
     const srv = byKind('server');
     applyCommand(world, { type: 'wireLink', a: { deviceId: pc.id, interfaceName: 'eth0' }, b: { deviceId: r1.id, interfaceName: 'eth0' } });
     applyCommand(world, { type: 'wireLink', a: { deviceId: r1.id, interfaceName: 'wan1' }, b: { deviceId: srv.id, interfaceName: 'eth0' } });
-    applyCommand(world, { type: 'setIpv4', deviceId: pc.id, interfaceName: 'eth0', address: '10.0.0.10', prefix: 24 });
+    applyCommand(world, { type: 'setIpv4', deviceId: pc.id, interfaceName: 'eth0', address: '10.0.0.10', prefix: 24, gateway: '10.0.0.1' });
     applyCommand(world, { type: 'setIpv4', deviceId: r1.id, interfaceName: 'eth0', address: '10.0.0.1', prefix: 24 });
     applyCommand(world, { type: 'setIpv4', deviceId: r1.id, interfaceName: 'wan1', address: '192.168.2.1', prefix: 24 });
     applyCommand(world, { type: 'setIpv4', deviceId: srv.id, interfaceName: 'eth0', address: '192.168.2.20', prefix: 24 });
@@ -85,6 +85,25 @@ describe('NetCorp sim', () => {
     expect(result.ok).toBe(false);
     expect(result.blockedAt?.deviceId).toBe(r1.id);
     expect(result.blockedAt?.reason).toContain('no route');
+  });
+
+  it('cross-subnet ping fails at the source without a gateway configured', () => {
+    applyCommand(world, { type: 'placeDevice', defId: 'desktop', name: 'pc1', x: 0, y: 0 });
+    applyCommand(world, { type: 'placeDevice', defId: 'router-soho', name: 'r1', x: 100, y: 0 });
+    applyCommand(world, { type: 'placeDevice', defId: 'server', name: 'srv1', x: 200, y: 0 });
+    const pc = byKind('desktop');
+    const r1 = byKind('router-soho');
+    const srv = byKind('server');
+    applyCommand(world, { type: 'wireLink', a: { deviceId: pc.id, interfaceName: 'eth0' }, b: { deviceId: r1.id, interfaceName: 'eth0' } });
+    applyCommand(world, { type: 'wireLink', a: { deviceId: r1.id, interfaceName: 'wan1' }, b: { deviceId: srv.id, interfaceName: 'eth0' } });
+    applyCommand(world, { type: 'setIpv4', deviceId: pc.id, interfaceName: 'eth0', address: '10.0.0.10', prefix: 24 });
+    applyCommand(world, { type: 'setIpv4', deviceId: r1.id, interfaceName: 'eth0', address: '10.0.0.1', prefix: 24 });
+    applyCommand(world, { type: 'setIpv4', deviceId: srv.id, interfaceName: 'eth0', address: '192.168.2.20', prefix: 24 });
+
+    const result = findPath(world, pc.id, '192.168.2.20');
+    expect(result.ok).toBe(false);
+    expect(result.blockedAt?.deviceId).toBe(pc.id);
+    expect(result.blockedAt?.reason).toContain('no gateway configured');
   });
 
   it('a destination firewall rule blocks the packet with a clear reason', () => {
@@ -113,5 +132,85 @@ describe('NetCorp sim', () => {
     applyCommand(world, { type: 'addFirewallRule', deviceId: srv.id, rule: { action: 'deny', srcCidr: '10.0.0.0/24' } });
 
     expect(findPath(world, pc.id, '10.0.0.20').ok).toBe(true);
+  });
+
+  describe('DHCP', () => {
+    function buildLanWithRouter(): { pc: Device; r1: Device; sw: Device } {
+      applyCommand(world, { type: 'placeDevice', defId: 'router-soho', name: 'r1', x: 100, y: 0 });
+      applyCommand(world, { type: 'placeDevice', defId: 'switch-unmanaged', name: 'sw1', x: 100, y: 150 });
+      applyCommand(world, { type: 'placeDevice', defId: 'desktop', name: 'pc1', x: 0, y: 300 });
+      const r1 = byKind('router-soho');
+      const sw = byKind('switch-unmanaged');
+      const pc = byKind('desktop');
+      applyCommand(world, { type: 'wireLink', a: { deviceId: r1.id, interfaceName: 'eth0' }, b: { deviceId: sw.id, interfaceName: 'eth0' } });
+      applyCommand(world, { type: 'wireLink', a: { deviceId: sw.id, interfaceName: 'eth1' }, b: { deviceId: pc.id, interfaceName: 'eth0' } });
+      applyCommand(world, { type: 'setIpv4', deviceId: r1.id, interfaceName: 'eth0', address: '10.0.0.1', prefix: 24 });
+      applyCommand(world, {
+        type: 'addDhcpPool',
+        deviceId: r1.id,
+        pool: { interfaceName: 'eth0', network: '10.0.0.0', prefix: 24, rangeStart: '10.0.0.100', rangeEnd: '10.0.0.110' },
+      });
+      return { pc, r1, sw };
+    }
+
+    it('no server on the segment: discover fails with "no offers"', () => {
+      applyCommand(world, { type: 'placeDevice', defId: 'desktop', name: 'pc1', x: 0, y: 0 });
+      const pc = byKind('desktop');
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
+      expect(world.log.at(-1)?.text).toContain('no offers');
+      expect(pc.interfaces[0]?.ipv4).toBeUndefined();
+    });
+
+    it('single server: lease allocated from the pool, source recorded', () => {
+      const { pc } = buildLanWithRouter();
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
+      const iface = pc.interfaces[0];
+      expect(iface?.ipv4?.address).toBe('10.0.0.100'); // lowest free address first
+      expect(iface?.ipv4Source).toBe('dhcp');
+      expect(iface?.leaseServerDeviceId).toBe(byKind('router-soho').id);
+      expect(world.log.at(-1)?.text).toContain('DHCP lease from r1');
+    });
+
+    it('pool allocation skips addresses already in use', () => {
+      const { pc } = buildLanWithRouter();
+      applyCommand(world, { type: 'setIpv4', deviceId: pc.id, interfaceName: 'eth0', address: '10.0.0.100', prefix: 24 });
+      applyCommand(world, { type: 'setIpv4', deviceId: pc.id, interfaceName: 'eth0' }); // clear, keep .100 taken
+      // .100 was released, but another device now holds it: re-add via a server desktop
+      applyCommand(world, { type: 'placeDevice', defId: 'desktop', name: 'pc2', x: -100, y: 300 });
+      const pc2 = Object.values(world.devices).find((d) => d.name === 'pc2');
+      const sw = byKind('switch-unmanaged');
+      applyCommand(world, { type: 'wireLink', a: { deviceId: sw.id, interfaceName: 'eth2' }, b: { deviceId: pc2?.id ?? '', interfaceName: 'eth0' } });
+      applyCommand(world, { type: 'setIpv4', deviceId: pc2?.id ?? '', interfaceName: 'eth0', address: '10.0.0.100', prefix: 24 });
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
+      expect(pc.interfaces[0]?.ipv4?.address).toBe('10.0.0.101');
+    });
+
+    it('rogue-DHCP incident: the consumer router wins the offer race and poisons the client', () => {
+      const { pc, sw } = buildLanWithRouter();
+      applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: sw.id });
+      const rogue = Object.values(world.devices).find((d) => d.name === 'mystery-router');
+      expect(rogue).toBeDefined();
+      expect(world.links.some((l) => l.a.deviceId === rogue?.id || l.b.deviceId === rogue?.id)).toBe(true);
+
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
+      const iface = pc.interfaces[0];
+      expect(iface?.ipv4?.address).toBe('192.168.1.100'); // wrong subnet — the classic symptom
+      expect(iface?.leaseServerDeviceId).toBe(rogue?.id);
+      expect(world.log.at(-1)?.text).toContain('DHCP lease from mystery-router');
+      expect(world.log.at(-1)?.text).toContain('of 2 offers');
+
+      // The poisoned client can no longer reach the real router.
+      const result = findPath(world, pc.id, '10.0.0.1');
+      expect(result.ok).toBe(false);
+    });
+
+    it('removing the rogue device restores correct leases', () => {
+      const { pc, sw } = buildLanWithRouter();
+      applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: sw.id });
+      const rogue = Object.values(world.devices).find((d) => d.name === 'mystery-router');
+      applyCommand(world, { type: 'deleteDevice', deviceId: rogue?.id ?? '' });
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
+      expect(pc.interfaces[0]?.ipv4?.address).toBe('10.0.0.100');
+    });
   });
 });

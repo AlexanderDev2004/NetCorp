@@ -1,6 +1,7 @@
 import type { Command, Device, Endpoint, Event, Interface as NetInterface, World } from './types.ts';
 import { log, nextId, nextRandom, randomMac } from './state.ts';
-import { findPath } from './net.ts';
+import { findDhcpServers, findPath } from './net.ts';
+import { allocateAddress } from './protocols/dhcp.ts';
 
 // Re-exports: the client talks to the engine through this module only.
 export { createWorld } from './state.ts';
@@ -168,6 +169,9 @@ export function applyCommand(world: World, command: Command): Event[] {
       }
       if (command.address === undefined) {
         delete iface.ipv4;
+        delete iface.ipv4Gateway;
+        delete iface.ipv4Source;
+        delete iface.leaseServerDeviceId;
         log(world, 'info', device.name, `${iface.name}: IPv4 cleared`);
         break;
       }
@@ -175,7 +179,12 @@ export function applyCommand(world: World, command: Command): Event[] {
         address: command.address,
         prefix: command.prefix ?? iface.ipv4?.prefix ?? 24,
       };
-      log(world, 'info', device.name, `${iface.name}: ${iface.ipv4.address}/${iface.ipv4.prefix}`);
+      iface.ipv4Source = 'static';
+      delete iface.leaseServerDeviceId;
+      if (command.gateway !== undefined) {
+        iface.ipv4Gateway = command.gateway;
+      }
+      log(world, 'info', device.name, `${iface.name}: ${iface.ipv4.address}/${iface.ipv4.prefix}${iface.ipv4Gateway !== undefined ? ` gw ${iface.ipv4Gateway}` : ''}`);
       break;
     }
 
@@ -212,6 +221,153 @@ export function applyCommand(world: World, command: Command): Event[] {
         device.config.dnsForwarder = command.address;
       }
       log(world, 'info', device.name, `DNS forwarder: ${device.config.dnsForwarder ?? 'none'}`);
+      break;
+    }
+
+    case 'addDhcpPool': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      const pool = {
+        interfaceName: command.pool.interfaceName,
+        network: command.pool.network,
+        prefix: command.pool.prefix,
+        rangeStart: command.pool.rangeStart,
+        rangeEnd: command.pool.rangeEnd,
+        leaseMinutes: command.pool.leaseMinutes ?? 120,
+      };
+      const iface = device.interfaces.find((i) => i.name === pool.interfaceName);
+      if (iface === undefined) {
+        log(world, 'warn', device.name, `cannot add DHCP pool: no interface ${pool.interfaceName}`);
+        break;
+      }
+      device.config.dhcpPools = device.config.dhcpPools.filter((p) => p.interfaceName !== pool.interfaceName);
+      device.config.dhcpPools.push(pool);
+      log(world, 'info', device.name, `DHCP pool on ${pool.interfaceName}: ${pool.network}/${pool.prefix} (${pool.rangeStart} – ${pool.rangeEnd})`);
+      break;
+    }
+
+    case 'removeDhcpPool': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      device.config.dhcpPools = device.config.dhcpPools.filter((p) => p.interfaceName !== command.interfaceName);
+      log(world, 'info', device.name, `DHCP pool removed from ${command.interfaceName}`);
+      break;
+    }
+
+    case 'dhcpDiscover': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      const iface =
+        command.interfaceName === undefined
+          ? (device.interfaces.find((i) => i.kind !== 'wan' && i.ipv4 === undefined) ??
+            device.interfaces.find((i) => i.kind !== 'wan'))
+          : device.interfaces.find((i) => i.name === command.interfaceName);
+      if (iface === undefined) {
+        log(world, 'warn', device.name, 'DHCP: no interface available to request a lease');
+        break;
+      }
+
+      const servers = findDhcpServers(world, device.id, iface.name);
+      if (servers.length === 0) {
+        log(world, 'warn', device.name, `DHCP discover on ${iface.name}: no offers received`);
+        break;
+      }
+      // All offers arrive nearly together; a dedicated consumer box answers
+      // faster than a router serving DHCP as a side task, so an injected
+      // rogue wins the offer race. The client just takes the first offer —
+      // it has no way to tell a rogue from the real one (GDD §5.1, §7.1).
+      const winner =
+        servers.find((server) => server.incident === true) ??
+        [...servers].sort((a, b) => a.id.localeCompare(b.id))[0];
+      if (winner === undefined) break;
+      const servingInterface = winner.interfaces.find(
+        (i) => winner.config.dhcpPools.some((p) => p.interfaceName === i.name) && isWired(world, winner.id, i.name),
+      );
+      const pool = winner.config.dhcpPools.find((p) => p.interfaceName === servingInterface?.name);
+      if (pool === undefined) {
+        log(world, 'warn', device.name, `DHCP: offer from ${winner.name} could not be honored`);
+        break;
+      }
+
+      // Lowest free address wins; addresses already in use anywhere on the
+      // network (static or leased) are off-limits.
+      const taken = new Set<string>();
+      for (const other of Object.values(world.devices)) {
+        for (const otherIface of other.interfaces) {
+          if (otherIface.ipv4 !== undefined) taken.add(otherIface.ipv4.address);
+        }
+      }
+      const address = allocateAddress(pool, taken);
+      if (address === undefined) {
+        log(world, 'alert', device.name, `DHCP: pool on ${winner.name} is exhausted — no lease available`);
+        break;
+      }
+
+      iface.ipv4 = { address, prefix: pool.prefix };
+      iface.ipv4Source = 'dhcp';
+      iface.leaseServerDeviceId = winner.id;
+      // The server's own address on the serving interface is the natural gateway.
+      if (servingInterface?.ipv4 !== undefined) {
+        iface.ipv4Gateway = servingInterface.ipv4.address;
+      } else {
+        delete iface.ipv4Gateway;
+      }
+      const suspect = servers.length > 1 ? ` (of ${servers.length} offers)` : '';
+      log(world, 'info', device.name, `DHCP lease from ${winner.name}: ${address}/${pool.prefix}${suspect}`);
+      break;
+    }
+
+    case 'triggerIncident': {
+      if (command.kind === 'rogue-dhcp') {
+        const target = deviceById(world, command.targetDeviceId);
+        if (target === undefined) break;
+        // The intern's consumer router: it pays for itself, plugs into the
+        // first free port it can find, and serves 192.168.1.0/24 out of the
+        // box — the classic rogue DHCP (GDD §7.1).
+        const device: Device = {
+          id: nextId(world, 'router-soho'),
+          kind: 'router-soho',
+          name: 'mystery-router',
+          defId: 'router-soho',
+          x: target.x + 140,
+          y: target.y + 60,
+          interfaces: (DEFAULT_INTERFACES['router-soho'] ?? []).map((iface) => ({
+            name: iface.name,
+            kind: iface.kind,
+            mac: randomMac(world),
+            enabled: true,
+          })),
+          config: { firewallRules: [], routes: [], dhcpPools: [], dnsRecords: [] },
+          uptimeTicks: 0,
+          firmware: 'RouterOS-like 7.14',
+          incident: true,
+        };
+        const lanPort = device.interfaces.find((i) => i.name === 'eth0');
+        const targetPort = target.interfaces.find((i) => i.kind !== 'wan' && !isWired(world, target.id, i.name));
+        if (lanPort === undefined || targetPort === undefined) {
+          log(world, 'warn', 'incident', `rogue DHCP: no free port on ${target.name} to plug into`);
+          break;
+        }
+        world.devices[device.id] = device;
+        world.links.push({
+          id: nextId(world, 'link'),
+          a: { deviceId: device.id, interfaceName: lanPort.name },
+          b: { deviceId: target.id, interfaceName: targetPort.name },
+          media: 'copper',
+        });
+        device.config.dhcpPools.push({
+          interfaceName: lanPort.name,
+          network: '192.168.1.0',
+          prefix: 24,
+          rangeStart: '192.168.1.100',
+          rangeEnd: '192.168.1.200',
+          leaseMinutes: 120,
+        });
+        // Consumer boxes ship with themselves as LAN gateway, out of the box.
+        lanPort.ipv4 = { address: '192.168.1.1', prefix: 24 };
+        lanPort.ipv4Source = 'static';
+        log(world, 'alert', 'incident', `rogue DHCP: an unmanaged consumer router just appeared next to ${target.name}`);
+      }
       break;
     }
 

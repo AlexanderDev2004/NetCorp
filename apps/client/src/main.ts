@@ -183,6 +183,12 @@ function renderInspector(): void {
           (link.b.deviceId === device.id && link.b.interfaceName === iface.name),
       );
       const ipv4 = iface.ipv4;
+      const source =
+        iface.ipv4Source === 'dhcp'
+          ? `via DHCP from ${esc(world.devices[iface.leaseServerDeviceId ?? '']?.name ?? '?')}`
+          : iface.ipv4Source === 'static'
+            ? 'static'
+            : '';
       return `
         <div class="iface">
           <div class="name">${esc(iface.name)} · ${esc(iface.kind)}${wired ? ' · wired' : ' · <span class="muted">free</span>'}</div>
@@ -195,9 +201,40 @@ function renderInspector(): void {
               value="${ipv4 === undefined ? '' : String(ipv4.prefix)}" />
             <button class="ip-clear" data-iface="${esc(iface.name)}">clear</button>
           </div>
+          <div class="row">
+            <label>gw</label>
+            <input class="wide ip-gateway" data-iface="${esc(iface.name)}" placeholder="gateway"
+              value="${iface.ipv4Gateway === undefined ? '' : esc(iface.ipv4Gateway)}" />
+            ${iface.kind !== 'wan' ? `<button class="dhcp-request" data-iface="${esc(iface.name)}">request DHCP</button>` : ''}
+          </div>
+          ${source !== '' ? `<div class="row muted">${source}</div>` : ''}
         </div>`;
     })
     .join('');
+
+  const pools = device.config.dhcpPools
+    .map(
+      (pool) => `
+        <div class="rule">
+          <span class="action-allow">${esc(pool.interfaceName)}</span>
+          <span class="muted">${esc(pool.network)}/${pool.prefix} · ${esc(pool.rangeStart)} – ${esc(pool.rangeEnd)}</span>
+          <button class="pool-remove" data-iface="${esc(pool.interfaceName)}">✕</button>
+        </div>`,
+    )
+    .join('');
+  const poolForm = `
+    <div class="row">
+      <select class="pool-iface">
+        ${device.interfaces.filter((i) => i.kind !== 'wan').map((i) => `<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('')}
+      </select>
+      <input class="pool-network wide" placeholder="network e.g. 10.0.0.0" />
+      <input class="pool-prefix" style="width:52px" placeholder="24" />
+    </div>
+    <div class="row">
+      <input class="pool-start" placeholder="range start" />
+      <input class="pool-end" placeholder="range end" />
+      <button class="pool-add">add pool</button>
+    </div>`;
 
   const rules = device.config.firewallRules
     .map((rule) => {
@@ -230,6 +267,11 @@ function renderInspector(): void {
       <input class="wide ping-target" placeholder="target address" />
       <button class="ping-run">run</button>
     </div>
+    <div class="row" style="margin-top:12px">
+      <b>DHCP server</b>
+    </div>
+    ${pools || '<div class="muted">No pools — this device serves no addresses.</div>'}
+    ${poolForm}
     <div class="row" style="margin-top:12px">
       <b>Firewall</b>
     </div>
@@ -269,6 +311,44 @@ function bindInspector(device: Device): void {
   for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.ip-clear')) {
     button.addEventListener('click', () => {
       run({ type: 'setIpv4', deviceId: device.id, interfaceName: button.dataset.iface ?? '' });
+    });
+  }
+  for (const input of inspectorEl.querySelectorAll<HTMLInputElement>('input.ip-gateway')) {
+    input.addEventListener('change', () => {
+      const addressInput = inspectorEl.querySelector<HTMLInputElement>(
+        `input.ip-address[data-iface="${input.dataset.iface}"]`,
+      );
+      const address = addressInput?.value.trim();
+      if (address === undefined || address === '') return;
+      run({ type: 'setIpv4', deviceId: device.id, interfaceName: input.dataset.iface ?? '', address, gateway: input.value.trim() });
+    });
+  }
+  for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.dhcp-request')) {
+    button.addEventListener('click', () => {
+      const ifaceName = button.dataset.iface;
+      run(
+        ifaceName === undefined || ifaceName === ''
+          ? { type: 'dhcpDiscover', deviceId: device.id }
+          : { type: 'dhcpDiscover', deviceId: device.id, interfaceName: ifaceName },
+      );
+    });
+  }
+
+  inspectorEl.querySelector('button.pool-add')?.addEventListener('click', () => {
+    const ifaceName = inspectorEl.querySelector<HTMLSelectElement>('select.pool-iface')?.value;
+    const network = inspectorEl.querySelector<HTMLInputElement>('input.pool-network')?.value.trim();
+    const prefixText = inspectorEl.querySelector<HTMLInputElement>('input.pool-prefix')?.value.trim();
+    const start = inspectorEl.querySelector<HTMLInputElement>('input.pool-start')?.value.trim();
+    const end = inspectorEl.querySelector<HTMLInputElement>('input.pool-end')?.value.trim();
+    const prefix = prefixText === undefined || prefixText === '' ? 24 : Number(prefixText);
+    if (ifaceName === undefined || network === undefined || network === '' || start === undefined || start === '' || end === undefined || end === '') {
+      return;
+    }
+    run({ type: 'addDhcpPool', deviceId: device.id, pool: { interfaceName: ifaceName, network, prefix, rangeStart: start, rangeEnd: end } });
+  });
+  for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.pool-remove')) {
+    button.addEventListener('click', () => {
+      run({ type: 'removeDhcpPool', deviceId: device.id, interfaceName: button.dataset.iface ?? '' });
     });
   }
 
@@ -459,7 +539,9 @@ run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[0] ?? '', interfaceN
 run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[2] ?? '', interfaceName: 'eth0', address: '192.168.10.50', prefix: 24 });
 
 // Dev affordance: URL params reproduce UI states for captures/tests.
-// ?select=<device name> preselects a device; ?mode=wire|place sets the mode.
+// ?select=<device name> preselects a device; ?mode=wire|place sets the mode;
+// ?incident=rogue-dhcp&target=<name>&lease=<name> injects the incident, then
+// makes the named device request a lease (the symptom appears on screen).
 const params = new URLSearchParams(window.location.search);
 const selectName = params.get('select');
 if (selectName !== null) {
@@ -468,5 +550,18 @@ if (selectName !== null) {
 }
 const modeParam = params.get('mode');
 if (modeParam === 'wire' || modeParam === 'place') mode = modeParam;
+if (params.get('incident') === 'rogue-dhcp') {
+  const target =
+    Object.values(world.devices).find((d) => d.name === params.get('target')) ??
+    Object.values(world.devices).find((d) => d.kind === 'switch-unmanaged');
+  if (target !== undefined) {
+    applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: target.id });
+    const leaseName = params.get('lease');
+    const leaser = leaseName === null ? undefined : Object.values(world.devices).find((d) => d.name === leaseName);
+    if (leaser !== undefined) {
+      applyCommand(world, { type: 'dhcpDiscover', deviceId: leaser.id });
+    }
+  }
+}
 
 render();

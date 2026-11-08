@@ -4,7 +4,7 @@
  */
 export { createWorld, log } from './state.ts';
 export { applyCommand, advanceTicks } from './engine.ts';
-export { findPath } from './net.ts';
+export { findPath, findDhcpServers } from './net.ts';
 export { firstMatch, packetAllowed } from './protocols/firewall.ts';
 export { allocateAddress, findPool, poolAddressCount } from './protocols/dhcp.ts';
 export { resolveLocal, resolveViaForwarder } from './protocols/dns.ts';

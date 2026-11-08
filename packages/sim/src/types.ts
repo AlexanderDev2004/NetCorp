@@ -40,6 +40,12 @@ export interface Interface {
   mac: string;
   kind: 'ethernet' | 'wifi' | 'wan';
   ipv4?: Ipv4;
+  /** Gateway for traffic leaving this subnet (static or learned via DHCP). */
+  ipv4Gateway?: string;
+  /** How the address got here: typed by hand, or leased from a DHCP server. */
+  ipv4Source?: 'static' | 'dhcp';
+  /** Device id of the DHCP server that granted the lease (ipv4Source 'dhcp'). */
+  leaseServerDeviceId?: string;
   enabled: boolean;
 }
 
@@ -107,6 +113,8 @@ export interface Device {
   /** Ticks since placement; wear/failure rolls key off this later (GDD §7.1). */
   uptimeTicks: number;
   firmware: string;
+  /** Set when an incident injection created this device (GDD §7). */
+  incident?: boolean;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'alert';
@@ -141,11 +149,17 @@ export type Command =
   | { type: 'moveDevice'; deviceId: string; x: number; y: number }
   | { type: 'wireLink'; a: Endpoint; b: Endpoint; media?: Link['media'] }
   | { type: 'unwireLink'; linkId: string }
-  | { type: 'setIpv4'; deviceId: string; interfaceName: string; address?: string; prefix?: number }
+  | { type: 'setIpv4'; deviceId: string; interfaceName: string; address?: string; prefix?: number; gateway?: string }
   | { type: 'addFirewallRule'; deviceId: string; rule: Omit<FirewallRule, 'id'> }
   | { type: 'removeFirewallRule'; deviceId: string; ruleId: string }
   | { type: 'addRoute'; deviceId: string; route: Route }
   | { type: 'setDnsForwarder'; deviceId: string; address?: string }
+  | { type: 'addDhcpPool'; deviceId: string; pool: Omit<DhcpPool, 'leaseMinutes'> & { leaseMinutes?: number } }
+  | { type: 'removeDhcpPool'; deviceId: string; interfaceName: string }
+  /** A client interface asks the network for a DHCP lease. */
+  | { type: 'dhcpDiscover'; deviceId: string; interfaceName?: string }
+  /** Incident injection (GDD §7). More kinds arrive with each era. */
+  | { type: 'triggerIncident'; kind: 'rogue-dhcp'; targetDeviceId: string }
   | { type: 'ping'; fromDevice: string; toAddress: string }
   /** Cash leaves the wallet; delivery to the board is a later command. */
   | { type: 'buy'; defId: string };
