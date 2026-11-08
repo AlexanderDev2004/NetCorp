@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "@netcorp/sim": ["packages/sim/src/index.ts"],
+      "@netcorp/data": ["packages/data/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/sim/src",
+    "packages/sim/test",
+    "packages/data/src",
+    "apps/client/src"
+  ]
+}
