@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyCommand, createWorld, findPath } from '../src';
+import { applyCommand, advanceTicks, createWorld, findPath } from '../src';
 import type { DeviceCatalog, Device, World } from '../src';
 
 const catalog: DeviceCatalog = {
@@ -211,6 +211,61 @@ describe('NetCorp sim', () => {
       applyCommand(world, { type: 'deleteDevice', deviceId: rogue?.id ?? '' });
       applyCommand(world, { type: 'dhcpDiscover', deviceId: pc.id });
       expect(pc.interfaces[0]?.ipv4?.address).toBe('10.0.0.100');
+    });
+
+    it('the rogue-DHCP incident opens a ticket that complains about symptoms, not causes', () => {
+      const { sw } = buildLanWithRouter();
+      applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: sw.id });
+      const ticket = world.tickets.at(-1);
+      expect(ticket?.status).toBe('open');
+      expect(ticket?.title.toLowerCase()).not.toContain('dhcp');
+      expect(ticket?.title.toLowerCase()).not.toContain('router');
+    });
+  });
+
+  describe('Tickets', () => {
+    it('resolving in SLA pays the full reward', () => {
+      applyCommand(world, { type: 'resolveTicket', ticketId: 'ticket-1' });
+      expect(world.tickets).toHaveLength(0); // nothing to resolve yet
+      const cash = world.cash;
+      applyCommand(world, { type: 'ping', fromDevice: 'nope', toAddress: '1.2.3.4' }); // advance nothing
+      // Open one via the incident path.
+      applyCommand(world, { type: 'placeDevice', defId: 'switch-unmanaged', name: 'sw1', x: 0, y: 0 });
+      const sw = byKind('switch-unmanaged');
+      applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: sw.id });
+      const ticket = world.tickets.at(-1);
+      expect(ticket).toBeDefined();
+      const cashBefore = world.cash;
+      applyCommand(world, { type: 'resolveTicket', ticketId: ticket?.id ?? '' });
+      expect(world.cash).toBe(cashBefore + (ticket?.rewardCash ?? 0));
+      expect(world.reputation).toBe(1);
+      expect(world.insight).toBe(1);
+      void cash;
+    });
+
+    it('SLA breach applies the penalty once; late resolution pays half', () => {
+      applyCommand(world, { type: 'placeDevice', defId: 'switch-unmanaged', name: 'sw1', x: 0, y: 0 });
+      const sw = byKind('switch-unmanaged');
+      applyCommand(world, { type: 'triggerIncident', kind: 'rogue-dhcp', targetDeviceId: sw.id });
+      const ticket = world.tickets.at(-1);
+      expect(ticket).toBeDefined();
+      const cashBefore = world.cash;
+      advanceTicks(world, (ticket?.slaTicks ?? 0) + 2);
+      expect(world.cash).toBe(cashBefore - (ticket?.penaltyCash ?? 0));
+      expect(world.reputation).toBe(-1);
+      expect(world.log.some((entry) => entry.source === 'sla')).toBe(true);
+
+      const lateResolveCash = world.cash;
+      applyCommand(world, { type: 'resolveTicket', ticketId: ticket?.id ?? '' });
+      expect(world.cash).toBe(lateResolveCash + Math.floor((ticket?.rewardCash ?? 0) / 2));
+      expect(world.reputation).toBe(-1); // no rep for late work
+    });
+
+    it('ambient tickets spawn over time, at most three open', () => {
+      advanceTicks(world, 48 * 6);
+      const open = world.tickets.filter((t) => t.status === 'open');
+      expect(open.length).toBeGreaterThan(0);
+      expect(open.length).toBeLessThanOrEqual(3);
     });
   });
 });

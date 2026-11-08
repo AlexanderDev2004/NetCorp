@@ -1,4 +1,4 @@
-import type { Command, Device, Endpoint, Event, Interface as NetInterface, World } from './types.ts';
+import type { Command, Device, Endpoint, Event, Interface as NetInterface, Ticket, World } from './types.ts';
 import { log, nextId, nextRandom, randomMac } from './state.ts';
 import { findDhcpServers, findPath } from './net.ts';
 import { allocateAddress } from './protocols/dhcp.ts';
@@ -367,6 +367,35 @@ export function applyCommand(world: World, command: Command): Event[] {
         lanPort.ipv4 = { address: '192.168.1.1', prefix: 24 };
         lanPort.ipv4Source = 'static';
         log(world, 'alert', 'incident', `rogue DHCP: an unmanaged consumer router just appeared next to ${target.name}`);
+        // The incident surfaces to the player as a symptom, never the cause
+        // (GDD §2). What the client sees: some device is down.
+        openTicket(world, {
+          client: 'Café Kopi Dua',
+          title: 'The card machine is down again',
+          symptom: 'Everything was fine until this morning. The terminal says "no network". Cash only for now — please hurry.',
+          slaTicks: 200,
+          rewardCash: 150,
+          penaltyCash: 120,
+        });
+      }
+      break;
+    }
+
+    case 'resolveTicket': {
+      const ticket = world.tickets.find((t) => t.id === command.ticketId);
+      if (ticket === undefined || ticket.status !== 'open') break;
+      ticket.status = 'resolved';
+      ticket.resolvedTick = world.tick;
+      if (ticket.breached) {
+        // Late but done: half pay, no reputation gain, no further penalty.
+        const pay = Math.floor(ticket.rewardCash / 2);
+        world.cash += pay;
+        log(world, 'info', 'ticket', `${ticket.client}: "${ticket.title}" resolved late — +$${pay} (SLA was breached)`);
+      } else {
+        world.cash += ticket.rewardCash;
+        world.reputation += 1;
+        world.insight += 1;
+        log(world, 'info', 'ticket', `${ticket.client}: "${ticket.title}" resolved in SLA — +$${ticket.rewardCash}, +1 rep, +1 insight`);
       }
       break;
     }
@@ -411,10 +440,96 @@ export function advanceTicks(world: World, count: number): Event[] {
     for (const device of Object.values(world.devices)) {
       device.uptimeTicks += 1;
     }
-    if (world.tick % 24 === 0) {
-      // Placeholder for the daily contract payout (GDD §6.2).
-      void nextRandom(world);
-    }
+    checkSlaBreaches(world);
+    maybeSpawnTickets(world);
   }
   return world.log.slice(before);
+}
+
+// ---- Tickets (GDD §6.2) ----
+
+interface TicketTemplate {
+  client: string;
+  title: string;
+  symptom: string;
+  slaTicks: number;
+  rewardCash: number;
+  penaltyCash: number;
+}
+
+/** Symptom, never cause. The player diagnoses; the ticket only complains. */
+const TICKET_TEMPLATES: TicketTemplate[] = [
+  {
+    client: 'Café Kopi Dua',
+    title: "Card machine can't reach the payment server",
+    symptom: 'The card terminal at the register stopped working. Everything else seems fine? Please help quickly, lunch rush is coming.',
+    slaTicks: 240,
+    rewardCash: 120,
+    penaltyCash: 80,
+  },
+  {
+    client: 'Klinik Sehat',
+    title: 'Wi-Fi drops for a minute every hour or so',
+    symptom: 'Front desk tablets lose connection periodically. It comes back on its own, but reception says it is getting worse.',
+    slaTicks: 320,
+    rewardCash: 150,
+    penaltyCash: 100,
+  },
+  {
+    client: 'Toko Maju Jaya',
+    title: 'The printer in the back office prints garbage',
+    symptom: 'Since someone moved desks, the invoice printer spits out one blank page per job. The other printer works.',
+    slaTicks: 400,
+    rewardCash: 60,
+    penaltyCash: 40,
+  },
+  {
+    client: 'Klinik Sehat',
+    title: 'New wing cannot open patient records',
+    symptom: 'Computers in the new wing say the file server cannot be found. The old wing is fine.',
+    slaTicks: 200,
+    rewardCash: 180,
+    penaltyCash: 140,
+  },
+];
+
+export function openTicket(world: World, template: TicketTemplate): Ticket {
+  const ticket: Ticket = {
+    id: nextId(world, 'ticket'),
+    client: template.client,
+    title: template.title,
+    symptom: template.symptom,
+    openedTick: world.tick,
+    slaTicks: template.slaTicks,
+    status: 'open',
+    breached: false,
+    rewardCash: template.rewardCash,
+    penaltyCash: template.penaltyCash,
+  };
+  world.tickets.push(ticket);
+  log(world, 'alert', 'ticket', `${template.client}: ${template.title} (SLA ${template.slaTicks} ticks, +$${template.rewardCash} / -$${template.penaltyCash})`);
+  return ticket;
+}
+
+function checkSlaBreaches(world: World): void {
+  for (const ticket of world.tickets) {
+    if (ticket.status === 'open' && !ticket.breached && world.tick > ticket.openedTick + ticket.slaTicks) {
+      ticket.breached = true;
+      world.cash -= ticket.penaltyCash;
+      world.reputation -= 1;
+      log(world, 'alert', 'sla', `${ticket.client}: SLA breached on "${ticket.title}" — -$${ticket.penaltyCash}, reputation hit`);
+    }
+  }
+}
+
+function maybeSpawnTickets(world: World): void {
+  // Slow ambient drip: at most one open ticket per client, up to 3 open.
+  const openCount = world.tickets.filter((t) => t.status === 'open').length;
+  if (openCount >= 3 || world.tick % 48 !== 0) return;
+  const clientsWithOpen = new Set(world.tickets.filter((t) => t.status === 'open').map((t) => t.client));
+  const options = TICKET_TEMPLATES.filter((template) => !clientsWithOpen.has(template.client));
+  if (options.length === 0) return;
+  const roll = nextRandom(world);
+  const template = options[roll % options.length];
+  if (template !== undefined) openTicket(world, template);
 }

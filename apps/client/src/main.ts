@@ -6,7 +6,7 @@
  * place from the catalog dropdown), wire (click two devices to link their
  * first free interfaces).
  */
-import { applyCommand, createWorld, type Device, type World } from '@netcorp/sim';
+import { advanceTicks, applyCommand, createWorld, type Device, type World } from '@netcorp/sim';
 import { CAREER_START, DEVICE_CATALOG, catalogAsRecord } from '@netcorp/data';
 
 const world = createWorld(CAREER_START.seed, catalogAsRecord());
@@ -34,6 +34,8 @@ type Mode = 'select' | 'place' | 'wire';
 let mode: Mode = 'select';
 let selectedId: string | null = null;
 let wireFromId: string | null = null;
+let asideTab: 'inspector' | 'tickets' = 'inspector';
+let clockRunning = false;
 let mouse = { x: 0, y: 0 };
 let drag: { deviceId: string; dx: number; dy: number; moved: boolean } | null = null;
 
@@ -393,12 +395,89 @@ function renderLog(): void {
     .join('');
 }
 
+function renderTickets(): void {
+  const ticketsEl = document.querySelector<HTMLDivElement>('#tickets');
+  const badge = document.querySelector<HTMLSpanElement>('#ticket-badge');
+  if (badge !== null) {
+    badge.textContent = String(world.tickets.filter((t) => t.status === 'open').length);
+  }
+  if (ticketsEl === null) return;
+
+  const sorted = [...world.tickets].sort((a, b) => {
+    const aOpen = a.status === 'open' ? 0 : 1;
+    const bOpen = b.status === 'open' ? 0 : 1;
+    if (aOpen !== bOpen) return aOpen - bOpen;
+    if (a.status === 'open' && b.status === 'open') {
+      // Most urgent first: breached, then least SLA time left.
+      const aRem = a.openedTick + a.slaTicks - world.tick;
+      const bRem = b.openedTick + b.slaTicks - world.tick;
+      if (a.breached !== b.breached) return a.breached ? -1 : 1;
+      return aRem - bRem;
+    }
+    return b.openedTick - a.openedTick;
+  });
+
+  const cards = sorted.map((ticket) => {
+    if (ticket.status === 'resolved') {
+      return `
+        <div class="ticket resolved">
+          <div class="client">${esc(ticket.client)}</div>
+          <div class="title">✓ ${esc(ticket.title)}</div>
+          <div class="meta"><span class="muted">resolved at t${ticket.resolvedTick ?? '?'}</span></div>
+        </div>`;
+    }
+    const remaining = ticket.openedTick + ticket.slaTicks - world.tick;
+    const fraction = remaining / ticket.slaTicks;
+    const slaClass = ticket.breached ? 'sla-breach' : fraction > 0.5 ? 'sla-ok' : fraction > 0.2 ? 'sla-warn' : 'sla-breach';
+    const slaText = ticket.breached ? 'SLA BREACHED' : `SLA: ${remaining} ticks left`;
+    return `
+      <div class="ticket${ticket.breached ? ' breached' : ''}">
+        <div class="client">${esc(ticket.client)}</div>
+        <div class="title">${esc(ticket.title)}</div>
+        <div class="symptom">${esc(ticket.symptom)}</div>
+        <div class="meta">
+          <span class="${slaClass}">${slaText}</span>
+          <span class="reward">+$${ticket.rewardCash}</span>
+          ${ticket.breached ? `<span class="penalty">-$${ticket.penaltyCash} taken</span>` : `<span class="penalty">-$${ticket.penaltyCash} on breach</span>`}
+          <button class="ticket-resolve" data-ticket="${esc(ticket.id)}">resolve</button>
+        </div>
+      </div>`;
+  });
+  ticketsEl.innerHTML = cards.join('') || '<span class="muted">No tickets. The clients are, for the moment, content.</span>';
+
+  for (const button of ticketsEl.querySelectorAll<HTMLButtonElement>('button.ticket-resolve')) {
+    button.addEventListener('click', () => {
+      run({ type: 'resolveTicket', ticketId: button.dataset.ticket ?? '' });
+    });
+  }
+}
+
+function setAsideTab(tab: 'inspector' | 'tickets'): void {
+  asideTab = tab;
+  render();
+}
+
 function render(): void {
   drawBoard();
   renderStats();
   renderHint();
   renderInspector();
+  renderTickets();
   renderLog();
+
+  const inspectorView = document.querySelector<HTMLDivElement>('#inspector-view');
+  const ticketsView = document.querySelector<HTMLDivElement>('#tickets-view');
+  inspectorView?.classList.toggle('hidden', asideTab !== 'inspector');
+  ticketsView?.classList.toggle('hidden', asideTab !== 'tickets');
+  document.querySelector('#tab-inspector')?.classList.toggle('active', asideTab === 'inspector');
+  document.querySelector('#tab-tickets')?.classList.toggle('active', asideTab === 'tickets');
+
+  const clockButton = document.querySelector<HTMLButtonElement>('#clock');
+  if (clockButton !== null) {
+    clockButton.textContent = clockRunning ? '⏸ pause' : '▶ run';
+    clockButton.classList.toggle('active', clockRunning);
+  }
+
   for (const id of ['mode-select', 'mode-wire', 'mode-place']) {
     const button = document.querySelector<HTMLButtonElement>(`#${id}`);
     if (button !== null) button.classList.toggle('active', id === `mode-${mode}`);
@@ -518,6 +597,21 @@ document.querySelector('#mode-select')?.addEventListener('click', () => setMode(
 document.querySelector('#mode-wire')?.addEventListener('click', () => setMode('wire'));
 document.querySelector('#mode-place')?.addEventListener('click', () => setMode('place'));
 placeDef?.addEventListener('change', () => setMode('place'));
+document.querySelector('#tab-inspector')?.addEventListener('click', () => setAsideTab('inspector'));
+document.querySelector('#tab-tickets')?.addEventListener('click', () => setAsideTab('tickets'));
+
+// Game clock: ticks the sim while running, so SLAs count down and ambient
+// tickets arrive. Paused by default for deterministic setup.
+const clockButton = document.querySelector<HTMLButtonElement>('#clock');
+clockButton?.addEventListener('click', () => {
+  clockRunning = !clockRunning;
+  render();
+});
+window.setInterval(() => {
+  if (!clockRunning) return;
+  advanceTicks(world, 1);
+  render();
+}, 500);
 
 window.addEventListener('resize', () => render());
 
@@ -550,6 +644,8 @@ if (selectName !== null) {
 }
 const modeParam = params.get('mode');
 if (modeParam === 'wire' || modeParam === 'place') mode = modeParam;
+if (params.get('tab') === 'tickets') asideTab = 'tickets';
+if (params.get('clock') === 'run') clockRunning = true;
 if (params.get('incident') === 'rogue-dhcp') {
   const target =
     Object.values(world.devices).find((d) => d.name === params.get('target')) ??
@@ -563,5 +659,7 @@ if (params.get('incident') === 'rogue-dhcp') {
     }
   }
 }
+const fast = Number(params.get('fast') ?? '');
+if (Number.isInteger(fast) && fast > 0) advanceTicks(world, fast);
 
 render();

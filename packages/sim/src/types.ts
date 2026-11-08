@@ -126,6 +126,26 @@ export interface LogEntry {
   text: string;
 }
 
+/**
+ * A client-reported symptom (GDD §2, §6.2). Tickets never state the cause —
+ * the title says what hurts, the symptom text is flavor, the diagnosis is the
+ * player's job.
+ */
+export interface Ticket {
+  id: string;
+  client: string;
+  title: string;
+  symptom: string;
+  openedTick: number;
+  /** Ticks from opening until the SLA expires. */
+  slaTicks: number;
+  status: 'open' | 'resolved';
+  breached: boolean;
+  resolvedTick?: number;
+  rewardCash: number;
+  penaltyCash: number;
+}
+
 /** Events are facts produced by the sim. The UI never invents them. */
 export type Event = LogEntry;
 
@@ -137,6 +157,7 @@ export interface World {
   devices: Record<string, Device>;
   links: Link[];
   log: LogEntry[];
+  tickets: Ticket[];
   cash: number;
   reputation: number;
   insight: number;
@@ -160,6 +181,8 @@ export type Command =
   | { type: 'dhcpDiscover'; deviceId: string; interfaceName?: string }
   /** Incident injection (GDD §7). More kinds arrive with each era. */
   | { type: 'triggerIncident'; kind: 'rogue-dhcp'; targetDeviceId: string }
+  /** The player marks a ticket fixed. The sim pays out per SLA state. */
+  | { type: 'resolveTicket'; ticketId: string }
   | { type: 'ping'; fromDevice: string; toAddress: string }
   /** Cash leaves the wallet; delivery to the board is a later command. */
   | { type: 'buy'; defId: string };

@@ -27,6 +27,7 @@ export function createWorld(seed: number, catalog: DeviceCatalog): World {
     devices: {},
     links: [],
     log: [],
+    tickets: [],
     cash: 400,
     reputation: 0,
     insight: 0,

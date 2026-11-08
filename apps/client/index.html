@@ -95,23 +95,62 @@
         flex-direction: column;
         background: #12141a;
       }
-      aside h2 {
+      .tabs {
+        display: flex;
+        gap: 6px;
+        padding: 8px 10px;
+        border-bottom: 1px solid #2a2f3a;
+        flex-shrink: 0;
+      }
+      .tabs button.active {
+        border-color: #7ee787;
+        color: #7ee787;
+      }
+      .badge {
+        background: #ff6b6b;
+        color: #12141a;
+        border-radius: 8px;
+        padding: 0 6px;
         font-size: 11px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #8a93a5;
-        margin: 0;
-        padding: 10px 14px;
+        font-weight: 700;
+      }
+      .badge:empty { display: none; }
+      .hidden { display: none; }
+      #inspector-view {
+        max-height: 55%;
+        overflow-y: auto;
         border-bottom: 1px solid #2a2f3a;
         flex-shrink: 0;
       }
       #inspector {
+        padding: 12px 14px;
+      }
+      #tickets-view {
         max-height: 55%;
         overflow-y: auto;
-        padding: 12px 14px;
         border-bottom: 1px solid #2a2f3a;
         flex-shrink: 0;
       }
+      #tickets {
+        padding: 12px 14px;
+      }
+      .ticket {
+        border: 1px solid #2a2f3a;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+      .ticket.breached { border-color: #ff6b6b; }
+      .ticket .client { color: #79c0ff; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+      .ticket .title { font-weight: 600; margin: 4px 0; }
+      .ticket .symptom { color: #8a93a5; font-size: 12px; line-height: 1.5; }
+      .ticket .meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+      .ticket .sla-ok { color: #7ee787; }
+      .ticket .sla-warn { color: #f0b429; }
+      .ticket .sla-breach { color: #ff6b6b; }
+      .ticket.resolved { opacity: 0.55; }
+      .ticket .reward { color: #7ee787; }
+      .ticket .penalty { color: #ff6b6b; }
       #inspector .row {
         display: flex;
         align-items: center;
@@ -160,6 +199,7 @@
       <button id="mode-wire">Wire</button>
       <select id="place-def" title="Device to place"></select>
       <button id="mode-place">Place</button>
+      <button id="clock" title="Game clock">⏸ pause</button>
       <span class="stats" id="stats"></span>
     </header>
     <main>
@@ -168,8 +208,16 @@
         <div id="hint"></div>
       </div>
       <aside>
-        <h2>Inspector</h2>
-        <div id="inspector"></div>
+        <div class="tabs">
+          <button id="tab-inspector" class="active">Inspector</button>
+          <button id="tab-tickets">Tickets <span id="ticket-badge" class="badge"></span></button>
+        </div>
+        <div id="inspector-view">
+          <div id="inspector"></div>
+        </div>
+        <div id="tickets-view" class="hidden">
+          <div id="tickets"></div>
+        </div>
         <h2>Event log</h2>
         <div id="log"></div>
       </aside>
