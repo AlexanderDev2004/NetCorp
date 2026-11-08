@@ -3,7 +3,7 @@
  * internal modules (net, protocols) are implementation details.
  */
 export { createWorld, log } from './state.ts';
-export { applyCommand, advanceTicks } from './engine.ts';
+export { applyCommand, advanceTicks, deliverMail } from './engine.ts';
 export { findPath, findDhcpServers } from './net.ts';
 export { firstMatch, packetAllowed } from './protocols/firewall.ts';
 export { allocateAddress, findPool, poolAddressCount } from './protocols/dhcp.ts';

@@ -149,6 +149,24 @@ export interface Ticket {
 /** Events are facts produced by the sim. The UI never invents them. */
 export type Event = LogEntry;
 
+/**
+ * One letter in the Inbox (GDD §8). Senders have personalities; phishes look
+ * like real mail and their actions carry real consequences.
+ */
+export interface Mail {
+  id: string;
+  from: string;
+  subject: string;
+  body: string;
+  kind: 'mentor' | 'vendor' | 'client' | 'invoice' | 'spam' | 'phish' | 'regulator';
+  receivedTick: number;
+  read: boolean;
+  /** Action buttons shown under the letter; each carries a sim command string. */
+  actions: { label: string; command: string }[];
+  /** Set once an action button is used; the mail collapses to its outcome. */
+  actionTaken?: string;
+}
+
 export interface World {
   seed: number;
   rngState: number;
@@ -158,6 +176,7 @@ export interface World {
   links: Link[];
   log: LogEntry[];
   tickets: Ticket[];
+  mail: Mail[];
   cash: number;
   reputation: number;
   insight: number;
@@ -183,6 +202,13 @@ export type Command =
   | { type: 'triggerIncident'; kind: 'rogue-dhcp'; targetDeviceId: string }
   /** The player marks a ticket fixed. The sim pays out per SLA state. */
   | { type: 'resolveTicket'; ticketId: string }
+  /** Opens a letter (marks it read). */
+  | { type: 'readMail'; mailId: string }
+  /**
+   * Uses an action button on a letter. The command string is the template's
+   * action payload, e.g. 'phish-pay:8841', 'reportPhish', 'openReleaseNotes'.
+   */
+  | { type: 'mailAction'; mailId: string; command: string }
   | { type: 'ping'; fromDevice: string; toAddress: string }
   /** Cash leaves the wallet; delivery to the board is a later command. */
   | { type: 'buy'; defId: string };

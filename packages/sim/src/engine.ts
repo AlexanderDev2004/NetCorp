@@ -1,4 +1,4 @@
-import type { Command, Device, Endpoint, Event, Interface as NetInterface, Ticket, World } from './types.ts';
+import type { Command, Device, Endpoint, Event, Interface as NetInterface, Mail, Ticket, World } from './types.ts';
 import { log, nextId, nextRandom, randomMac } from './state.ts';
 import { findDhcpServers, findPath } from './net.ts';
 import { allocateAddress } from './protocols/dhcp.ts';
@@ -400,6 +400,43 @@ export function applyCommand(world: World, command: Command): Event[] {
       break;
     }
 
+    case 'readMail': {
+      const mail = world.mail.find((m) => m.id === command.mailId);
+      if (mail !== undefined) mail.read = true;
+      break;
+    }
+
+    case 'mailAction': {
+      const mail = world.mail.find((m) => m.id === command.mailId);
+      if (mail === undefined || mail.actionTaken !== undefined) break;
+      if (!mail.actions.some((action) => action.command === command.command)) break;
+      mail.actionTaken = command.command;
+      mail.read = true;
+      const [verb] = command.command.split(':');
+      switch (verb) {
+        case 'phish-pay': {
+          // The classic outcome: money gone, and the "vendor" is not coming.
+          world.cash -= 250;
+          world.reputation -= 1;
+          log(world, 'alert', 'mail', `payment sent to "${mail.from}" — the account is empty and support does not exist. -$250, -1 rep`);
+          break;
+        }
+        case 'reportPhish': {
+          world.insight += 1;
+          log(world, 'info', 'mail', `reported "${mail.subject}" as phishing — spam filter tuned (+1 insight)`);
+          break;
+        }
+        case 'openReleaseNotes': {
+          world.insight += 1;
+          log(world, 'info', 'mail', `read the release notes carefully (+1 insight)`);
+          break;
+        }
+        default:
+          log(world, 'debug', 'mail', `action "${command.command}" on "${mail.subject}" had no effect`);
+      }
+      break;
+    }
+
     case 'ping': {
       const from = deviceById(world, command.fromDevice);
       if (from === undefined) break;
@@ -442,8 +479,78 @@ export function advanceTicks(world: World, count: number): Event[] {
     }
     checkSlaBreaches(world);
     maybeSpawnTickets(world);
+    maybeDeliverMail(world);
   }
   return world.log.slice(before);
+}
+
+// ---- Mail (GDD §8) ----
+
+export interface MailTemplateInput {
+  from: string;
+  subject: string;
+  body: string;
+  kind: Mail['kind'];
+  actions?: { label: string; command: string }[];
+}
+
+/** Deliver a letter. Content lives in the data package; the sim owns timing. */
+export function deliverMail(world: World, template: MailTemplateInput): Mail {
+  const mail: Mail = {
+    id: nextId(world, 'mail'),
+    from: template.from,
+    subject: template.subject,
+    body: template.body,
+    kind: template.kind,
+    receivedTick: world.tick,
+    read: false,
+    actions: template.actions ?? [],
+  };
+  world.mail.push(mail);
+  log(world, 'info', 'mail', `new mail from ${template.from}: "${template.subject}"`);
+  return mail;
+}
+
+// Ambient letters the engine generates over time. Phishes are gameplay-core,
+// so they live here; flavor templates live in the data package.
+const AMBIENT_MAIL: MailTemplateInput[] = [
+  {
+    from: 'Novabit Updates',
+    subject: 'RouterOS-like 7.16 maintenance release',
+    body: 'Routine update. Fixes a UI glitch in the firewall table and shaves boot time. No known issues reported so far.',
+    kind: 'vendor',
+  },
+  {
+    from: 'CloudScale Deals <noreply@cloudscale-deals.example>',
+    subject: 'MEGA SALE: enterprise switches up to 60% off!!',
+    body: 'This week only! Prices so low you will not believe it! Click here! Unsubscribe?',
+    kind: 'spam',
+  },
+  {
+    from: 'Vandor Billing Dept <billing@vand0r-updates.example>',
+    subject: 'URGENT: unpaid invoice — service suspends in 24h',
+    body:
+      'Dear customer,\n\nYour payment has FAILED. Click below or your network services will be SUSPENDED in 24 HOURS.\n\n' +
+      'Pay now: http://vand0r-updates.example/pay\n\nVandor Billing Dept.',
+    kind: 'phish',
+    actions: [
+      { label: 'Pay now', command: 'phish-pay' },
+      { label: 'Report as phish', command: 'reportPhish' },
+    ],
+  },
+  {
+    from: 'ByteMill Account Team',
+    subject: 'Your trade-in credit is waiting',
+    body: 'Trade in any old switch, get $25 off your next ByteMill purchase. Some of what we resell still works, mostly.',
+    kind: 'vendor',
+  },
+];
+
+function maybeDeliverMail(world: World): void {
+  if (world.tick % 96 !== 0) return;
+  const roll = nextRandom(world);
+  const template = AMBIENT_MAIL[roll % AMBIENT_MAIL.length];
+  if (template !== undefined) deliverMail(world, template);
 }
 
 // ---- Tickets (GDD §6.2) ----

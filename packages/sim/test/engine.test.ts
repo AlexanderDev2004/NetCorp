@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyCommand, advanceTicks, createWorld, findPath } from '../src';
+import { applyCommand, advanceTicks, createWorld, deliverMail, findPath } from '../src';
 import type { DeviceCatalog, Device, World } from '../src';
 
 const catalog: DeviceCatalog = {
@@ -266,6 +266,59 @@ describe('NetCorp sim', () => {
       const open = world.tickets.filter((t) => t.status === 'open');
       expect(open.length).toBeGreaterThan(0);
       expect(open.length).toBeLessThanOrEqual(3);
+    });
+  });
+
+  describe('Mail', () => {
+    it('falling for a phish costs cash and reputation, once', () => {
+      deliverMail(world, {
+        from: 'Vandor Billing Dept <billing@vand0r-updates.example>',
+        subject: 'URGENT: unpaid invoice',
+        body: 'Pay now.',
+        kind: 'phish',
+        actions: [{ label: 'Pay now', command: 'phish-pay' }],
+      });
+      const mail = world.mail.at(-1);
+      expect(mail).toBeDefined();
+      const cashBefore = world.cash;
+      applyCommand(world, { type: 'mailAction', mailId: mail?.id ?? '', command: 'phish-pay' });
+      expect(world.cash).toBe(cashBefore - 250);
+      expect(world.reputation).toBe(-1);
+      // A second press does nothing: the outcome happens once.
+      applyCommand(world, { type: 'mailAction', mailId: mail?.id ?? '', command: 'phish-pay' });
+      expect(world.cash).toBe(cashBefore - 250);
+    });
+
+    it('reporting a phish pays insight instead', () => {
+      deliverMail(world, {
+        from: 'Vandor Billing Dept <billing@vand0r-updates.example>',
+        subject: 'URGENT: unpaid invoice',
+        body: 'Pay now.',
+        kind: 'phish',
+        actions: [
+          { label: 'Pay now', command: 'phish-pay' },
+          { label: 'Report as phish', command: 'reportPhish' },
+        ],
+      });
+      const mail = world.mail.at(-1);
+      const insightBefore = world.insight;
+      const cashBefore = world.cash;
+      applyCommand(world, { type: 'mailAction', mailId: mail?.id ?? '', command: 'reportPhish' });
+      expect(world.insight).toBe(insightBefore + 1);
+      expect(world.cash).toBe(cashBefore);
+    });
+
+    it('readMail marks the letter read', () => {
+      deliverMail(world, { from: 'Dr. Paula Reboot', subject: 'Hello', body: 'Hi.', kind: 'mentor' });
+      const mail = world.mail.at(-1);
+      expect(mail?.read).toBe(false);
+      applyCommand(world, { type: 'readMail', mailId: mail?.id ?? '' });
+      expect(mail?.read).toBe(true);
+    });
+
+    it('ambient mail arrives over time', () => {
+      advanceTicks(world, 96 * 3);
+      expect(world.mail.length).toBeGreaterThanOrEqual(3);
     });
   });
 });

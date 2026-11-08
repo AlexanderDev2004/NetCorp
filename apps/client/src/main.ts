@@ -8,8 +8,8 @@
  * place the dock selection), wire (click two devices to link their first free
  * interfaces).
  */
-import { advanceTicks, applyCommand, createWorld, type Device, type World } from '@netcorp/sim';
-import { CAREER_START, DEVICE_CATALOG, catalogAsRecord } from '@netcorp/data';
+import { advanceTicks, applyCommand, createWorld, deliverMail, type Device, type Mail, type World } from '@netcorp/sim';
+import { CAREER_START, DEVICE_CATALOG, STARTER_MAIL, catalogAsRecord } from '@netcorp/data';
 
 const world = createWorld(CAREER_START.seed, catalogAsRecord());
 world.cash = CAREER_START.startingCash + 1000; // demo funds for the sandbox
@@ -21,7 +21,8 @@ const toastEl = document.querySelector<HTMLDivElement>('#toast');
 const logEl = document.querySelector<HTMLDivElement>('#log-panel');
 const inspectorPanel = document.querySelector<HTMLDivElement>('#inspector-panel');
 const inspectorEl = document.querySelector<HTMLDivElement>('#inspector');
-const ticketsPanel = document.querySelector<HTMLDivElement>('#tickets-panel');
+const mailPanel = document.querySelector<HTMLDivElement>('#mail-panel');
+const mailView = document.querySelector<HTMLDivElement>('#mail-view');
 const dockEl = document.querySelector<HTMLDivElement>('#dock');
 const inboxBtn = document.querySelector<HTMLButtonElement>('#inbox-btn');
 
@@ -32,7 +33,9 @@ let mode: Mode = 'select';
 let selectedDefId: string | null = DEVICE_CATALOG[0]?.id ?? null;
 let selectedId: string | null = null;
 let wireFromId: string | null = null;
-let ticketsOpen = false;
+let mailPanelOpen = false;
+let mailTab: 'mail' | 'tickets' = 'mail';
+let openMailId: string | null = null;
 let clockRunning = false;
 let mouse = { x: 0, y: 0 };
 let drag: { deviceId: string; dx: number; dy: number; moved: boolean } | null = null;
@@ -460,10 +463,6 @@ function renderTickets(): void {
   const badge = document.querySelector<HTMLSpanElement>('#ticket-badge');
   const openCount = world.tickets.filter((t) => t.status === 'open');
   if (badge !== null) badge.textContent = String(openCount.length);
-  if (inboxBtn !== null) {
-    // Quorum's Inbox: badge turns red and the button pulses when action waits.
-    inboxBtn.classList.toggle('has-action', openCount.some((t) => t.breached));
-  }
   if (ticketsEl === null) return;
 
   const sorted = [...world.tickets].sort((a, b) => {
@@ -514,6 +513,96 @@ function renderTickets(): void {
   }
 }
 
+const OUTCOME_TEXT: Record<string, { text: string; tone: 'bad' | 'good' | 'neutral' }> = {
+  'phish-pay': { text: 'Payment sent. The "vendor" is not coming back. (-$250, -1 reputation)', tone: 'bad' },
+  reportPhish: { text: 'Reported as phishing. Your spam filter just got smarter. (+1 insight)', tone: 'good' },
+  openReleaseNotes: { text: 'You actually read the release notes. Somewhere, Dr. Reboot smiles. (+1 insight)', tone: 'good' },
+};
+
+function renderMail(): void {
+  const mailBadge = document.querySelector<HTMLSpanElement>('#mail-badge');
+  const inboxBadge = document.querySelector<HTMLSpanElement>('#inbox-badge');
+  const unread = world.mail.filter((m) => !m.read);
+  if (mailBadge !== null) mailBadge.textContent = String(unread.length);
+  if (inboxBadge !== null) inboxBadge.textContent = String(unread.length);
+  if (inboxBtn !== null) {
+    // Quorum's Inbox rule: the badge turns red and the button pulses when a
+    // message waits for the player's action.
+    const actionable = world.mail.some((m) => !m.read && !m.actionTaken && m.actions.length > 0);
+    inboxBtn.classList.toggle('has-action', actionable);
+  }
+  if (mailView === null) return;
+
+  const tabs = document.querySelectorAll<HTMLButtonElement>('#mail-panel .tabs button');
+  for (const tab of tabs) {
+    tab.classList.toggle('active', tab.id === (mailTab === 'mail' ? 'mail-tab-mail' : 'mail-tab-tickets'));
+  }
+  const ticketsEl = document.querySelector<HTMLDivElement>('#tickets');
+  ticketsEl?.classList.toggle('hidden', mailTab !== 'tickets');
+  mailView.classList.toggle('hidden', mailTab !== 'mail');
+  if (mailTab !== 'mail') return;
+
+  const mail = openMailId === null ? undefined : world.mail.find((m) => m.id === openMailId);
+
+  if (mail === undefined) {
+    const rows = [...world.mail].reverse().map((m) => {
+      const snippet = m.body.replaceAll('\n', ' ').slice(0, 90);
+      return `
+        <div class="mail-row${m.read ? ' read' : ''}" data-mail="${esc(m.id)}">
+          <div class="from">
+            <span class="dot"></span>
+            <span>${esc(m.from)}</span>
+            <span class="mail-kind">${m.kind}</span>
+          </div>
+          <div class="subject">${esc(m.subject)}</div>
+          <div class="snippet">${esc(snippet)}</div>
+        </div>`;
+    });
+    mailView.innerHTML = rows.join('') || '<span class="muted">The inbox is empty. Enjoy it while it lasts.</span>';
+    for (const row of mailView.querySelectorAll<HTMLDivElement>('.mail-row')) {
+      row.addEventListener('click', () => {
+        openMailId = row.dataset.mail ?? null;
+        if (openMailId !== null) run({ type: 'readMail', mailId: openMailId });
+        renderMail();
+      });
+    }
+    return;
+  }
+
+  const outcome = mail.actionTaken === undefined ? undefined : OUTCOME_TEXT[mail.actionTaken.split(':')[0] ?? ''];
+  const buttons = mail.actionTaken === undefined
+    ? mail.actions
+        .map(
+          (action) =>
+            `<button class="${action.command.startsWith('phish-pay') ? 'danger' : 'primary'} mail-action" data-command="${esc(action.command)}">${esc(action.label)}</button>`,
+        )
+        .join('')
+    : '';
+  mailView.innerHTML = `
+    <div class="mail-read">
+      <button class="back">← inbox</button>
+      <div class="from">${esc(mail.from)}</div>
+      <div class="subject">${esc(mail.subject)}</div>
+      <div class="body">${esc(mail.body)}</div>
+      ${buttons !== '' ? `<div class="actions">${buttons}</div>` : ''}
+      ${
+        outcome !== undefined
+          ? `<div class="outcome ${outcome.tone === 'neutral' ? '' : outcome.tone}">${esc(outcome.text)}</div>`
+          : ''
+      }
+    </div>`;
+  mailView.querySelector('button.back')?.addEventListener('click', () => {
+    openMailId = null;
+    renderMail();
+  });
+  for (const button of mailView.querySelectorAll<HTMLButtonElement>('button.mail-action')) {
+    button.addEventListener('click', () => {
+      run({ type: 'mailAction', mailId: mail.id, command: button.dataset.command ?? '' });
+      renderMail();
+    });
+  }
+}
+
 function renderLog(): void {
   if (logEl === null) return;
   const recent = world.log.slice(-6);
@@ -536,6 +625,7 @@ function render(): void {
   renderHud();
   renderInspector();
   renderTickets();
+  renderMail();
   renderLog();
   renderHint();
 
@@ -550,7 +640,8 @@ function render(): void {
   }
   const clockButton = document.querySelector<HTMLButtonElement>('#clock');
   if (clockButton !== null) clockButton.textContent = clockRunning ? 'Pause' : 'Run';
-  if (ticketsPanel !== null) ticketsPanel.classList.toggle('open', ticketsOpen);
+  if (mailPanel !== null) mailPanel.classList.toggle('open', mailPanelOpen);
+  document.body.classList.toggle('mail-open', mailPanelOpen);
 }
 
 // ---- Canvas input ----
@@ -586,7 +677,7 @@ canvas.addEventListener('mouseup', (event) => {
   if (mode === 'select') {
     if (!wasDrag && hit !== undefined) {
       selectedId = hit.id;
-      ticketsOpen = false;
+      mailPanelOpen = false;
     } else if (!wasDrag && hit === undefined) {
       selectedId = null;
     }
@@ -659,13 +750,21 @@ document.querySelector('#inspector-close')?.addEventListener('click', () => {
   render();
 });
 inboxBtn?.addEventListener('click', () => {
-  ticketsOpen = !ticketsOpen;
-  if (ticketsOpen) selectedId = null;
+  mailPanelOpen = !mailPanelOpen;
+  if (mailPanelOpen) selectedId = null;
   render();
 });
-document.querySelector('#tickets-close')?.addEventListener('click', () => {
-  ticketsOpen = false;
+document.querySelector('#mail-close')?.addEventListener('click', () => {
+  mailPanelOpen = false;
   render();
+});
+document.querySelector('#mail-tab-mail')?.addEventListener('click', () => {
+  mailTab = 'mail';
+  renderMail();
+});
+document.querySelector('#mail-tab-tickets')?.addEventListener('click', () => {
+  mailTab = 'tickets';
+  renderMail();
 });
 
 const clockButton = document.querySelector<HTMLButtonElement>('#clock');
@@ -686,7 +785,7 @@ window.addEventListener('keydown', (event) => {
   if (key === 'w') setMode('wire');
   if (key === 'p') setMode('place');
   if (key === 't') {
-    ticketsOpen = !ticketsOpen;
+    mailPanelOpen = !mailPanelOpen;
     render();
   }
   if (event.code === 'Space') {
@@ -697,7 +796,7 @@ window.addEventListener('keydown', (event) => {
   if (key === 'escape') {
     wireFromId = null;
     selectedId = null;
-    ticketsOpen = false;
+    mailPanelOpen = false;
     setMode('select');
   }
   if (key === 'delete' && selectedId !== null) {
@@ -725,8 +824,13 @@ run({
 run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[0] ?? '', interfaceName: 'eth0', address: '192.168.10.1', prefix: 24 });
 run({ type: 'setIpv4', deviceId: Object.keys(world.devices)[2] ?? '', interfaceName: 'eth0', address: '192.168.10.50', prefix: 24 });
 
+// Deliver the starter inbox from the data package.
+for (const template of STARTER_MAIL) {
+  deliverMail(world, template);
+}
+
 // Dev affordance: URL params reproduce UI states for captures/tests.
-// ?select=<name>, ?mode=wire|place, ?tab=tickets, ?clock=run,
+// ?select=<name>, ?mode=wire|place, ?tab=mail|tickets, ?openmail=<index>, ?clock=run,
 // ?incident=rogue-dhcp&target=<name>&lease=<name>, ?fast=<ticks>
 const params = new URLSearchParams(window.location.search);
 const selectName = params.get('select');
@@ -736,7 +840,20 @@ if (selectName !== null) {
 }
 const modeParam = params.get('mode');
 if (modeParam === 'wire' || modeParam === 'place') mode = modeParam;
-if (params.get('tab') === 'tickets') ticketsOpen = true;
+if (params.get('tab') === 'tickets') {
+  mailPanelOpen = true;
+  mailTab = 'tickets';
+} else if (params.get('tab') === 'mail') {
+  mailPanelOpen = true;
+  mailTab = 'mail';
+}
+const openMailParam = params.get('openmail');
+if (openMailParam !== null) {
+  mailPanelOpen = true;
+  mailTab = 'mail';
+  const letter = world.mail[Number(openMailParam)];
+  if (letter !== undefined) openMailId = letter.id;
+}
 if (params.get('clock') === 'run') clockRunning = true;
 if (params.get('incident') === 'rogue-dhcp') {
   const target =
