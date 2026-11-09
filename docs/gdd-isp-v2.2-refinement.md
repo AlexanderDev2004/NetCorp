@@ -494,6 +494,14 @@ Panels extending the existing NOC and incident UI (no separate game mode): **Sec
 
 The system teaches defensive ISP operations: exposure management, vulnerability prioritization, capacity planning, routing security, detection, mitigation, recovery, and business continuity.
 
+### V2.2-4.5 SLA Penalty Rules (new §15.1 note; resolves an unspecified rule)
+
+v2 §13.2 promises that SLA products "impose penalties (§15)" and both V2.2-4.4 and the V2.2-5.1 matrix lean on SLA credits — but no document ever defined how a penalty is computed. One note in §15.1 now owns the rule:
+
+- **MVP (matches the implemented prototype):** each SLA ticket carries a tier-based flat penalty (per-tier amounts; balancing value). If the ticket breaches its SLA countdown, the penalty is deducted once per breach event. Resolving late pays half the resolution reward, with no reputation or insight gain.
+- **v0.5 (migration, when the billing/report layer exists):** penalties become real ISP-style service credits — a percentage of the breached customer's monthly fee per breach window (percentage per SLA tier; balancing value), replacing the flat amounts. The §15.1 SLA compliance report gains a per-customer credit ledger.
+- The formula lives only in §15.1. The ticket board, security incidents (V2.2-4.4), and the economy consume its outputs — there is no second implementation of the calculation.
+
 ---
 
 ## V2.2-5. Cross-System Dependency Matrix
@@ -578,7 +586,7 @@ Add the following rows and columns to the existing matrix. Existing relationship
 | **Maintenance** | Asset records (tracked classes), corrective + emergency repair, simple WOs | Registry screen, PM + condition-based, spares inventory | Reliability analytics (MTBF/MTTR trends), full lifecycle | Advanced degradation simulation |
 | **Upstream** | 1–2 transit profiles, flat/commit billing | Multi-homing + public peering (IXP costs, route server) | 95th-percentile billing, private peering, RPKI/research security node | Full interconnection ecosystem, caches |
 | **Analytics** | §6.5 core metrics + arg-min bottleneck (TC-3 semantics) + before/after windows | Threshold config, forecasting (V2.2-3.4 spec), incident bands | p95 billing integration, revenue-at-risk depth | Predictive maintenance |
-| **Cybersecurity** (V2.2-4.4) | Basic security events; volumetric DDoS abstraction; service exhaustion; basic ACL/firewall; NOC detection; incident response | Vulnerability Registry; CVE/CVSS advisory model; patch management; IDS/IPS abstraction; DNS security; credential compromise; upstream DDoS mitigation | BGP hijack and route-leak scenarios; RPKI/ROV; uRPF/SAV; RTBH/FlowSpec; security research branch; security posture analytics | Advanced multi-vector campaigns; ransomware recovery; insider threat; supply-chain incidents; cross-provider attack coordination |
+| **Cybersecurity** (V2.2-4.4) | Basic security events; volumetric DDoS abstraction; service exhaustion; basic ACL/firewall; NOC detection; incident response; **minimal firmware path** — vendor CVE mail, per-asset firmware version, Device Inspector "update firmware" action (maintenance window + upgrade-failure risk; no CVSS/registry UI) | Vulnerability Registry; CVE/CVSS advisory model; patch management; IDS/IPS abstraction; DNS security; credential compromise; upstream DDoS mitigation | BGP hijack and route-leak scenarios; RPKI/ROV; uRPF/SAV; RTBH/FlowSpec; security research branch; security posture analytics | Advanced multi-vector campaigns; ransomware recovery; insider threat; supply-chain incidents; cross-provider attack coordination |
 
 **Why this phasing** (per the brief: why / dependencies / complexity / minimal playable / deferred):
 
@@ -589,6 +597,18 @@ Add the following rows and columns to the existing matrix. Existing relationship
 - **Arg-min bottleneck at MVP:** §6.6's detector must be right from day one because tickets, postmortems, and the marker all consume it; forecasting waits for 30-day history to exist. *Deferred:* labels-on-forecast UI polish.
 - **Incident-and-response security at MVP:** the full Vulnerability Registry needs asset/version tracking, vendor advisory content, patch compatibility, maintenance scheduling, and prioritization UI; the MVP should first establish the incident-and-response loop, which the vulnerability system then expands without a second simulation engine. *Minimal playable security loop:* (1) the player operates a network with basic firewall/ACL controls; (2) a DDoS or service-exhaustion event occurs; (3) the existing monitoring layer detects abnormal utilization or service health; (4) the NOC generates an incident with affected assets and customers; (5) the player selects a mitigation action; (6) the flow model calculates remaining legitimate service capacity; (7) the business layer calculates SLA, revenue-at-risk, and recovery cost; (8) the incident is closed with a short postmortem. *Deferred:* registry depth, IDS/IPS, DNS security, credential compromise, scrubbing contracts.
 - **Routing security at v1.0:** RPKI, route validation, and advanced BGP mitigation depend on the existing ASN/BGP policy layer, upstream cooperation, and route-state modeling; they should be introduced after basic upstream and multi-homing systems are stable. *Deferred until then:* hijack/route-leak scenarios, uRPF/SAV, RTBH/FlowSpec, posture analytics.
+- **Minimal firmware path at MVP** (resolves the v2 §24.1 ↔ this roadmap contradiction): v2 §24.1 ships a vendor mail "with CVE notice" at MVP and v2's core carries firmware pressure, while "CVE/CVSS advisory model" above sits at v0.5. Resolution: at MVP the CVE mail exists and is actionable through a minimal firmware path — a per-asset firmware version field and a plain update-firmware action in the Device Inspector, with a maintenance window and upgrade-failure risk. No CVSS scores, no Vulnerability Registry, no prioritization UI. "CVE/CVSS advisory model at v0.5" therefore means the full advisory/registry/prioritization layer, not the mail.
+
+### V2.2-7.1 Era Mapping (new; version phasing above stays dev-planning)
+
+| System | Unlocks at era | Gate |
+|---|---|---|
+| Competitors (static profiles + choice weights); Maintenance (asset records, corrective repair); Cybersecurity MVP (security events, DDoS/service exhaustion, ACL/firewall templates, minimal firmware path) | 0 | — |
+| Vulnerability Registry; security-specialist role | 2 | — |
+| Multi-homing, IXP/public peering, scrubbing contracts (both delivery paths, V2.2-8 #8) | 3 | ASN/BGP layer |
+| Routing security (RPKI/ROV, uRPF/SAV, RTBH/FlowSpec); free-form ACL/FlowSpec rule editing | 3+ | ASN/BGP + upstream cooperation |
+
+§20's era ladder remains the single in-fiction progression authority; the MVP/v0.5/v1.0 columns are development milestones, not gameplay gates.
 
 Deterministic tick-based flow simulation: unchanged. No packet-level simulation is introduced anywhere in V2.2.
 
@@ -614,22 +634,22 @@ Deterministic tick-based flow simulation: unchanged. No packet-level simulation 
 3. Is per-household exposure tracking affordable at MVP scale (≈1,800 households)? (Yes at this scale; revisit at region scale.)
 4. Should the water-sensor/OTDR condition tools require research unlocks, or ship as catalog items? (Lean: catalog items — CBM should be a purchase decision, not a tree gate.)
 5. Peering-policy negotiation depth: fixed policies (open/selective per v2) vs event-driven bilateral negotiation? (Lean: fixed policies; negotiation is content, not system.)
-6. Should the MVP include only volumetric DDoS, or also a simple service-exhaustion event? (Lean: include both, but keep the second as an abstract service-capacity event.)
-7. Should real CVE IDs appear in the campaign, or should the game use fictional IDs? (Lean: fictional IDs for core campaign content; real CVEs can appear in optional educational/reference material.)
-8. Should DDoS scrubbing be available through upstream contracts or as a dedicated security provider? (Lean: both, with different costs and coverage.)
-9. Should IDS/IPS be a research unlock or catalog purchase? (Lean: basic IDS as a purchase; advanced IPS capabilities as a research and staffing progression.)
-10. Should security staff be separate from network technicians? (Lean: introduce a security-specialist role at v0.5; MVP response can use trained NOC staff.)
-11. Should the player be able to configure detailed ACL/FlowSpec rules? (Lean: basic policy templates first; advanced rule configuration only after the underlying routing model is ready.)
+6. **DDoS scope at MVP** — *resolved by consistency:* the V2.2-7 roadmap row already includes both volumetric DDoS and an abstract service-exhaustion event at MVP; the lean is confirmed and the question is closed.
+7. **CVE identifiers** — *decided:* fictional IDs (e.g., `NET-2026-0117`) for all core campaign content, clearly labeled; real CVEs may appear only in an optional educational reference panel, with their published scores and vectors preserved verbatim.
+8. **Scrubbing delivery** — *decided:* both paths — an upstream-transit add-on (cheaper, tied to that provider's capacity tier) and a standalone on-demand security provider (pricier, provider-independent, slower activation).
+9. **IDS/IPS unlock** — *decided:* basic IDS is a catalog purchase; effective IPS requires the security research branch plus trained staff (research + staffing progression).
+10. **Security staffing** — *decided:* MVP response runs on NOC technicians with a security skill modifier; a dedicated security-specialist role (own salary, skills, response-time modifiers) joins at v0.5.
+11. **Control-configuration depth** — *decided:* named policy templates at MVP/v0.5 (block port set, rate-limit class, RTBH on target); free-form ACL rule editing and FlowSpec rule composition arrive at v1.0 with the BGP/routing model.
 
 ---
 
 ## V2.2-9. Change Summary
 
-**Added:** §10.5 Competitor Intelligence & Market Response; §14.6 + §10.6 Maintenance & Asset Lifecycle; §9.5 Upstream/Transit/Peering business (with the MANRS practice loop); V2.2-5 dependency matrix; corrections spec V2.2-3.1–3.5 with test cases TC-1…TC-6; §V2.2-4.4 Cybersecurity & Network Resilience (vulnerability management on CVE/CVSS v4.0; threat taxonomy for DoS/DDoS, routing attacks, DNS attacks, and internal compromise; Threat Event Engine; detection and response controls; security incident fields; threat intelligence; security UI; SEC-1…SEC-10 test cases).
+**Added:** §10.5 Competitor Intelligence & Market Response; §14.6 + §10.6 Maintenance & Asset Lifecycle; §9.5 Upstream/Transit/Peering business (with the MANRS practice loop); V2.2-5 dependency matrix; corrections spec V2.2-3.1–3.5 with test cases TC-1…TC-6; §V2.2-4.4 Cybersecurity & Network Resilience (vulnerability management on CVE/CVSS v4.0; threat taxonomy for DoS/DDoS, routing attacks, DNS attacks, and internal compromise; Threat Event Engine; detection and response controls; security incident fields; threat intelligence; security UI; SEC-1…SEC-10 test cases); §V2.2-4.5 SLA penalty rules (new §15.1 note); §V2.2-7.1 era mapping.
 
 **Modified:** economy → USD-only (v2.1 §19 currency decision removed; market tiers and all non-currency localization retained); v2.1 §6.6 bottleneck → arg-min-of-allocated-share + fault flags (revenue-weighting kept, double-counting removed, incident/persistent separated); v2.1 §13.6 campaign formulas → household-level exposure model with seeded deterministic draws; v2.1 §14.4 forecasting → full sampling/aggregation/label spec; v2.1 §18.1 lab rewards → validity/interpretation/dedup rules; v2 §7.2 optical numbers → parameter table.
 
-**Extended:** §V2.2-5 dependency matrix with security relationships and ten security integration checks; §V2.2-6 references with CVSS/CISA KEV/MITRE ATT&CK/NIST SP 800-189/MANRS rows; §V2.2-7 roadmap with the cybersecurity row, the minimal playable security loop, and the CVSS-at-v0.5 / routing-security-at-v1.0 rationales; §V2.2-8 assumptions and six security open questions; §V2.2-9 this summary.
+**Extended:** §V2.2-5 dependency matrix with security relationships and ten security integration checks; §V2.2-6 references with CVSS/CISA KEV/MITRE ATT&CK/NIST SP 800-189/MANRS rows; §V2.2-7 roadmap with the cybersecurity row, the minimal playable security loop, the minimal-firmware-path MVP reconciliation, and the CVSS-at-v0.5 / routing-security-at-v1.0 rationales; §V2.2-8 assumptions, with the six security questions resolved as decisions (grill session); §V2.2-9 this summary.
 
 **Retained unchanged (security additions):** the deterministic tick-based flow simulation — no packet-level simulation, real exploit execution, malware execution, or offensive cyber gameplay is introduced by V2.2-4.4.
 
