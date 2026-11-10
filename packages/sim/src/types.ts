@@ -26,6 +26,8 @@ export interface DeviceDef {
   interfaces: { name: string; kind: Interface['kind'] }[];
   /** Vendor firmware channel string, e.g. "RouterOS-like 7.14" (GDD §10). */
   firmware: string;
+  /** 0–1. Older hardware fails more often; lower fails sooner (GDD §7.1). */
+  reliability?: number;
 }
 
 export type DeviceCatalog = Record<string, DeviceDef>;
@@ -115,9 +117,49 @@ export interface Device {
   firmware: string;
   /** Set when an incident injection created this device (GDD §7). */
   incident?: boolean;
+  /** Set when an exploit landed (outdated firmware); patching clears it. */
+  compromised?: boolean;
+  /** Set when a wear roll kills the hardware; a paid repair brings it back. */
+  failed?: boolean;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'alert';
+
+/** Game mode. 'normal' is the standard pace; 'hard' squeezes pay and hardware. */
+export type Difficulty = 'normal' | 'hard';
+
+/** Per-season prestige scorecard: the points the shop earned in one season. */
+export interface PrestigeBreakdown {
+  /** Banked cash, $50 per point (debt clamps at zero — the region rounds down, not under). */
+  cashPoints: number;
+  /** Standing with the community, 25 per point. */
+  reputationPoints: number;
+  /** Hard-won experience, 15 per point. */
+  insightPoints: number;
+  /** Recurring client base at season close, 40 per live contract. */
+  contractPoints: number;
+  /** Infrastructure built, 5 per device on the board. */
+  networkPoints: number;
+  /** Service record, 10 per resolved ticket. */
+  servicePoints: number;
+  /** The hard-mode risk premium on everything above. */
+  hardBonus: number;
+  total: number;
+}
+
+/** One closed season, as the region remembers it: score plus the frozen card. */
+export interface PrestigeSeasonRecord {
+  season: number;
+  score: number;
+  breakdown: PrestigeBreakdown;
+}
+
+/**
+ * Season theme declared by the ISP association (GDD-inspired season goals).
+ * Each theme bends one economy dial for the whole season; 'none' is the
+ * quiet baseline. Themes rotate in a fixed order across seasons.
+ */
+export type SeasonGoalId = 'none' | 'contract-boom' | 'hardware-shortage' | 'maintenance-season' | 'ticket-surge';
 
 export interface LogEntry {
   tick: number;
@@ -146,6 +188,22 @@ export interface Ticket {
   penaltyCash: number;
 }
 
+/** A maintenance contract: the client pays daily while their device stays healthy. */
+export interface Contract {
+  id: string;
+  client: string;
+  /** The client's device on the board; the contract pays while it is healthy. */
+  deviceId: string;
+  /** Cash per day (24 ticks), locked at signing with the reputation multiplier. */
+  feePerDay: number;
+  startedTick: number;
+  /** Tick the current term ends; the daily roll then offers renewal or churns. */
+  endTick: number;
+  /** Trust strikes this term: SLA breaches and withheld fees. Any strike at term end means churn. */
+  breaches: number;
+  active: boolean;
+}
+
 /** Events are facts produced by the sim. The UI never invents them. */
 export type Event = LogEntry;
 
@@ -165,22 +223,55 @@ export interface Mail {
   actions: { label: string; command: string }[];
   /** Set once an action button is used; the mail collapses to its outcome. */
   actionTaken?: string;
+  /**
+   * Set by the sim when the spam filter is sharp enough to catch the letter
+   * on arrival: it lands already flagged (and, once the filter is veteran,
+   * already reported — no payout possible). The UI renders the flag.
+   */
+  quarantined?: boolean;
+  /** The player moved the letter to the discard folder; it stays retrievable. */
+  discarded?: boolean;
 }
 
 export interface World {
   seed: number;
   rngState: number;
   tick: number;
+  /** Game mode: hard pays 20% less, wears hardware out half again as fast, and the client clock runs faster. */
+  difficulty: Difficulty;
+  /** Season number, 1-based. Each season runs 30 days; prestige accumulates across them. */
+  season: number;
+  /** The association's declared theme for the current season; bends one economy dial. */
+  goal: SeasonGoalId;
+  /** One record per closed season: the score and the scorecard frozen at its close. */
+  prestigeHistory: PrestigeSeasonRecord[];
   catalog: DeviceCatalog;
   devices: Record<string, Device>;
   links: Link[];
   log: LogEntry[];
   tickets: Ticket[];
   mail: Mail[];
+  /** Active maintenance contracts: the shop's recurring revenue (GDD §6). */
+  contracts: Contract[];
   cash: number;
   reputation: number;
   insight: number;
+  /** How many times the player has paid a phishing "invoice". Feeds the escalating reputation cost. */
+  phishPayments: number;
+  /** Server-room tier index into RACK_TIERS: how many devices the board can hold. */
+  rackTier: number;
+  /**
+   * Tick the current season's scorecard last closed, once it does. The client
+   * shows the scorecard overlay for exactly this closing (see prestigeHistory).
+   */
+  endgameTick?: number;
   nextId: number;
+  /**
+   * Latest known firmware version per def id, supplied by the content layer
+   * (the sim stays content-free). Devices behind their channel are eligible
+   * for the ambient outdated-firmware incident.
+   */
+  firmwareChannels: Record<string, string>;
 }
 
 export type Command =
@@ -190,6 +281,9 @@ export type Command =
   | { type: 'wireLink'; a: Endpoint; b: Endpoint; media?: Link['media'] }
   | { type: 'unwireLink'; linkId: string }
   | { type: 'setIpv4'; deviceId: string; interfaceName: string; address?: string; prefix?: number; gateway?: string }
+  /** Brings an interface UP (true) or DOWN (false); a down endpoint blocks its links. */
+  | { type: 'setInterfaceEnabled'; deviceId: string; interfaceName: string; enabled: boolean }
+| { type: 'updateFirmware'; deviceId: string; version: string }
   | { type: 'addFirewallRule'; deviceId: string; rule: Omit<FirewallRule, 'id'> }
   | { type: 'removeFirewallRule'; deviceId: string; ruleId: string }
   | { type: 'addRoute'; deviceId: string; route: Route }
@@ -200,10 +294,15 @@ export type Command =
   | { type: 'dhcpDiscover'; deviceId: string; interfaceName?: string }
   /** Incident injection (GDD §7). More kinds arrive with each era. */
   | { type: 'triggerIncident'; kind: 'rogue-dhcp'; targetDeviceId: string }
+| { type: 'triggerIncident'; kind: 'outdated-firmware'; targetDeviceId: string; latestVersion: string }
+  /** Wear injection: marks the device failed as if a wear roll had landed. */
+  | { type: 'triggerIncident'; kind: 'wear-failure'; targetDeviceId: string }
   /** The player marks a ticket fixed. The sim pays out per SLA state. */
   | { type: 'resolveTicket'; ticketId: string }
   /** Opens a letter (marks it read). */
   | { type: 'readMail'; mailId: string }
+  /** Moves a letter to or out of the discard folder; the letter is never destroyed. */
+  | { type: 'discardMail'; mailId: string; restore?: boolean }
   /**
    * Uses an action button on a letter. The command string is the template's
    * action payload, e.g. 'phish-pay:8841', 'reportPhish', 'openReleaseNotes'.
@@ -211,4 +310,21 @@ export type Command =
   | { type: 'mailAction'; mailId: string; command: string }
   | { type: 'ping'; fromDevice: string; toAddress: string }
   /** Cash leaves the wallet; delivery to the board is a later command. */
-  | { type: 'buy'; defId: string };
+  | { type: 'buy'; defId: string }
+  /** Buys the next server-room rack tier, raising the board's device capacity. */
+  | { type: 'upgradeRack' }
+  /** Pays to bring a failed (worn-out) device back online. */
+  | { type: 'repairDevice'; deviceId: string }
+  /** Swaps a failed device for brand-new hardware of the same model, in place. */
+  | { type: 'replaceDevice'; deviceId: string }
+  /**
+   * Community work: sponsor a local LAN party or offer free fixes. Costs
+   * cash, earns reputation — the way back from a breach spiral (GDD §5).
+   */
+  | { type: 'goodwill'; action: 'sponsor-lan' | 'free-repairs' }
+  /** Flips the game mode; the client picks its clock speed up from this. */
+  | { type: 'setDifficulty'; difficulty: Difficulty }
+  /** Signs a maintenance contract with a client, pinned to their device. */
+  | { type: 'signContract'; client: string; deviceId: string }
+  /** Ends a contract; the client stops paying at the next daily roll. */
+  | { type: 'cancelContract'; contractId: string };

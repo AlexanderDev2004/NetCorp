@@ -29,10 +29,18 @@ export function createWorld(seed: number, catalog: DeviceCatalog): World {
     log: [],
     tickets: [],
     mail: [],
+    contracts: [],
     cash: 400,
     reputation: 0,
     insight: 0,
+    difficulty: 'normal',
+    season: 1,
+    goal: 'none',
+    prestigeHistory: [],
+    phishPayments: 0,
+    rackTier: 0,
     nextId: 0,
+    firmwareChannels: {},
   };
 }
 

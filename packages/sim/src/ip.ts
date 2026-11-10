@@ -1,17 +1,28 @@
 /** Small IP/CIDR helpers. IPv4 only for the MVP. */
 
-export function ipv4ToInt(address: string): number {
+/** Strict dotted-quad check: four numeric octets 0–255, no empty parts. */
+export function isValidIpv4(address: string): boolean {
   const parts = address.split('.');
-  if (parts.length !== 4) throw new Error(`bad ipv4: ${address}`);
-  let value = 0;
+  if (parts.length !== 4) return false;
   for (const part of parts) {
+    if (!/^\d+$/.test(part)) return false;
     const octet = Number(part);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
-      throw new Error(`bad ipv4: ${address}`);
-    }
-    value = (value << 8) | octet;
+    if (octet < 0 || octet > 255) return false;
+  }
+  return true;
+}
+
+export function ipv4ToInt(address: string): number {
+  if (!isValidIpv4(address)) throw new Error(`bad ipv4: ${address}`);
+  let value = 0;
+  for (const part of address.split('.')) {
+    value = (value << 8) | Number(part);
   }
   return value >>> 0;
+}
+
+export function isValidPrefix(prefix: number): boolean {
+  return Number.isInteger(prefix) && prefix >= 0 && prefix <= 32;
 }
 
 export function maskForPrefix(prefix: number): number {
