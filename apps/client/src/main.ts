@@ -10,8 +10,8 @@
  * place the catalog selection), wire (click two devices to link their first
  * free interfaces).
  */
-import { advanceTicks, applyCommand, createWorld, deliverMail, CONTRACT_OFFERS, RACK_TIERS, REPAIR_COST, TRADE_IN_CREDIT, phishAlertLevel, phishPayRepLoss, rackSlots, rewardMultiplier, TWIN_REPLACEMENT_PHISH, PRESTIGE_DAY_TICKS, careerPrestige, SEASON_GOALS, devicePrice, repairCost, maybeRivalPoach, type Contract, type Device, type Mail, type World, type DeviceKind } from '@netcorp/sim';
-import { BOARD_PROTOTYPE, BOARD_PROTOTYPE_TOPOLOGY, DEVICE_CATALOG, FIRMWARE_UPDATES, STARTER_MAIL, catalogAsRecord, type ScenarioTopology } from '@netcorp/data';
+import { advanceTicks, applyCommand, createWorld, deliverMail, CONTRACT_OFFERS, RACK_TIERS, REPAIR_COST, TRADE_IN_CREDIT, phishAlertLevel, phishPayRepLoss, rackSlots, researchCost, rewardMultiplier, TWIN_REPLACEMENT_PHISH, PRESTIGE_DAY_TICKS, careerPrestige, SEASON_GOALS, devicePrice, repairCost, labNoiseBand, maybeRivalPoach, rivalHolds, RIVAL_HELD_COST, RIVAL_POACH_SCORE, type Contract, type Device, type Mail, type World, type DeviceKind } from '@netcorp/sim';
+import { BOARD_PROTOTYPE, BOARD_PROTOTYPE_TOPOLOGY, DEVICE_CATALOG, EXPERIMENT_TEMPLATES, FIRMWARE_UPDATES, MODULE_CATALOG, RESEARCH_TREE, STARTER_MAIL, catalogAsRecord, researchNodesAsList, type ScenarioTopology } from '@netcorp/data';
 
 const world = createWorld(BOARD_PROTOTYPE.seed, catalogAsRecord());
 world.cash = BOARD_PROTOTYPE.startingCash;
@@ -19,6 +19,12 @@ world.cash = BOARD_PROTOTYPE.startingCash;
 for (const [defId, update] of Object.entries(FIRMWARE_UPDATES)) {
   world.firmwareChannels[defId] = update.version;
 }
+// The optics catalog (GDD §11) is content: what the SFP slots can take.
+world.modules = MODULE_CATALOG;
+// The research tree (GDD §18) is content; the sim validates and runs it.
+world.researchNodes = researchNodesAsList();
+// The lab bench's experiment catalog (V2.2-3.5) is content too.
+world.experiments = EXPERIMENT_TEMPLATES;
 
 const canvas = document.querySelector<HTMLCanvasElement>('#board');
 const ctx = canvas === null ? null : canvas.getContext('2d');
@@ -42,7 +48,18 @@ let mailTab: 'mail' | 'tickets' | 'contracts' = 'mail';
 let mailFolder: 'inbox' | 'discarded' = 'inbox';
 let openMailId: string | null = null;
 let shopOpen = false;
+let researchOpen = false;
+let researchBranch = RESEARCH_TREE[0]?.key ?? 'fiber';
+let researchNodeId = RESEARCH_TREE[0]?.nodes[0]?.id ?? '';
+/** Header search text — empty means browse the selected branch (GDD §18). */
+let researchQuery = '';
+/** The lab template currently selected in the research panel's bench (V2.2-3.5). */
+let labTemplateId = '';
+/** Hypothesis form values, kept in state so the 2 Hz re-render keeps what you typed. */
+let labFormState = { predicted: '', tolerance: '', reps: '6' };
 let clockRunning = false;
+/** The clock's pacing multiplier: 1x is the base rate; hard mode halves it. */
+let clockSpeed = 1;
 /** The closing the player has already dismissed: the scorecard shows again for each new season. */
 let endgameDismissedTick: number | null = null;
 /** Season number being replayed from the shop's records, when one is open. */
@@ -172,8 +189,13 @@ function showToast(text: string): void {
 
 function deviceBoxWidth(device: Device): number {
   if (ctx === null) return 120;
+  const mgmt = device.interfaces.find((i) => i.ipv4 !== undefined)?.ipv4;
+  const label = mgmt === undefined ? device.kind : `${mgmt.address}/${mgmt.prefix}`;
   ctx.font = "500 12.5px 'Geist Mono', ui-monospace, monospace";
-  return Math.max(120, ctx.measureText(device.name).width + 34);
+  const nameW = ctx.measureText(device.name).width;
+  ctx.font = "500 11px 'Geist Mono', ui-monospace, monospace";
+  const addrW = ctx.measureText(label).width;
+  return Math.max(128, nameW + 56, addrW + 18);
 }
 
 function deviceAt(x: number, y: number): Device | undefined {
@@ -183,7 +205,53 @@ function deviceAt(x: number, y: number): Device | undefined {
   });
 }
 
-function drawBoard(): void {
+/** Stable 0..1 phase per link id, so packet belts do not march in lockstep. */
+function linkPhase(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 1000) / 1000;
+}
+
+/** Where a cable docks on a node's chassis: the box-edge point toward the peer. */
+function edgeAnchor(from: Device, toX: number, toY: number, halfWidth: number): { x: number; y: number } {
+  const hw = halfWidth / 2;
+  const hh = 26;
+  const dx = toX - from.x;
+  const dy = toY - from.y;
+  if (dx === 0 && dy === 0) return { x: from.x + hw, y: from.y };
+  const scaleX = dx !== 0 ? hw / Math.abs(dx) : Infinity;
+  const scaleY = dy !== 0 ? hh / Math.abs(dy) : Infinity;
+  const s = Math.min(scaleX, scaleY);
+  return { x: from.x + dx * s, y: from.y + dy * s };
+}
+
+/** A packet: a chunky cargo square riding the belt, like an item on a Factorio belt. */
+function drawPacket(x: number, y: number, color: string, stalled = false): void {
+  if (ctx === null) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.roundRect(-4.5, -4.5, 9, 9, 2);
+  ctx.fillStyle = color;
+  ctx.globalAlpha = stalled ? 0.55 : 0.9;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(9, 12, 16, 0.9)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  // Hot core so the cargo pops off the dark conduit.
+  ctx.globalAlpha = stalled ? 0.5 : 0.95;
+  ctx.fillStyle = stalled ? C.danger : '#eaf6ff';
+  ctx.beginPath();
+  ctx.roundRect(-1.8, -1.8, 3.6, 3.6, 1);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawBoard(now: number = performance.now()): void {
   if (canvas === null || ctx === null) return;
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
@@ -194,22 +262,20 @@ function drawBoard(): void {
   ctx.fillStyle = C.bg;
   ctx.fillRect(0, 0, width, height);
 
-  // Fine grid.
-  ctx.strokeStyle = C.grid;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let gx = 0; gx < width; gx += 32) {
-    ctx.moveTo(gx + 0.5, 0);
-    ctx.lineTo(gx + 0.5, height);
+  // Blueprint dot grid — the Factory's blueprint style, not ruled paper.
+  ctx.fillStyle = 'rgba(159, 173, 191, 0.14)';
+  for (let gx = 16; gx < width; gx += 32) {
+    for (let gy = 16; gy < height; gy += 32) {
+      ctx.fillRect(gx, gy, 2, 2);
+    }
   }
-  for (let gy = 0; gy < height; gy += 32) {
-    ctx.moveTo(0, gy + 0.5);
-    ctx.lineTo(width, gy + 0.5);
-  }
-  ctx.stroke();
 
-  // Cables: dark core with a lighter edge. A cable whose endpoint interface
-  // is DOWN draws red — the player sees the break, and the inspector explains it.
+  const t = now / 1000;
+
+  // Cables are belt conduits: a dark casing with a colored core, packets
+  // riding it both ways like items on a Factorio belt. A cable whose endpoint
+  // interface is DOWN (or whose box failed) jams — stalled chips pile up
+  // instead of arriving; a compromised endpoint stains its traffic red.
   for (const link of world.links) {
     const a = world.devices[link.a.deviceId];
     const b = world.devices[link.b.deviceId];
@@ -217,88 +283,237 @@ function drawBoard(): void {
     const aIface = a.interfaces.find((i) => i.name === link.a.interfaceName);
     const bIface = b.interfaces.find((i) => i.name === link.b.interfaceName);
     const down = (aIface !== undefined && !aIface.enabled) || (bIface !== undefined && !bIface.enabled);
-    const edge = down ? C.danger : C.cableEdge;
-    const core = down ? '#7f2226' : C.cable;
+    const dead = down || a.failed === true || b.failed === true;
+    const compromised = a.compromised === true || b.compromised === true;
+    const wifi = link.media === 'wireless';
+    // Optics: when either endpoint's SFP slot carries a fiber module, the
+    // conduit is a fiber run — one bright photon core instead of a copper pair.
+    const aModuleId = aIface?.kind === 'sfp' ? a.modules?.[aIface.name] : undefined;
+    const bModuleId = bIface?.kind === 'sfp' ? b.modules?.[bIface.name] : undefined;
+    const fiber =
+      (aModuleId !== undefined && world.modules[aModuleId]?.medium === 'fiber') ||
+      (bModuleId !== undefined && world.modules[bModuleId]?.medium === 'fiber');
+    const p1 = edgeAnchor(a, b.x, b.y, deviceBoxWidth(a));
+    const p2 = edgeAnchor(b, a.x, a.y, deviceBoxWidth(b));
+    const nx = -(p2.y - p1.y);
+    const ny = p2.x - p1.x;
+    const nlen = Math.hypot(nx, ny) || 1;
+    const ox = (nx / nlen) * 2.2;
+    const oy = (ny / nlen) * 2.2;
+    const length = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+
     ctx.lineCap = 'round';
-    ctx.strokeStyle = edge;
-    ctx.lineWidth = 5.6;
+    // Casing: near-black channel, slightly wider than the core.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.lineWidth = wifi ? 8 : 13;
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
     ctx.stroke();
-    ctx.strokeStyle = core;
-    ctx.lineWidth = 3.6;
+    // Core: dark copper for live ethernet, deep red when the lane is dead,
+    // dark glass when the run rides optics.
+    ctx.strokeStyle = dead ? '#571f24' : wifi ? '#24455c' : fiber ? '#10231c' : '#20262e';
+    ctx.lineWidth = wifi ? 5 : 10;
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
     ctx.stroke();
+    if (wifi) {
+      // Radio link: dashed halo instead of conductors.
+      ctx.save();
+      ctx.setLineDash([4, 7]);
+      ctx.strokeStyle = dead ? 'rgba(239, 98, 98, 0.5)' : 'rgba(176, 133, 245, 0.5)';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      ctx.restore();
+    } else if (fiber) {
+      // Fiber run: a single bright photon core down the conduit's center —
+      // glass carries one beam, not a copper pair.
+      ctx.strokeStyle = dead ? 'rgba(239, 98, 98, 0.45)' : 'rgba(54, 201, 143, 0.6)';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      // Belt chevrons: arrows scrolling along the conduit, the Factory's
+      // belt direction marks. They give the cable a machined rhythm.
+      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+      const tieCount = Math.max(2, Math.floor(length / 34));
+      ctx.strokeStyle = dead ? 'rgba(239, 98, 98, 0.4)' : 'rgba(54, 201, 143, 0.38)';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 0; i < tieCount; i++) {
+        const p = (i / tieCount + t * 0.12 + linkPhase(link.id)) % 1;
+        ctx.save();
+        ctx.translate(p1.x + (p2.x - p1.x) * p, p1.y + (p2.y - p1.y) * p);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(-2.2, -3);
+        ctx.lineTo(1.6, 0);
+        ctx.lineTo(-2.2, 3);
+        ctx.stroke();
+        ctx.restore();
+      }
+    } else {
+      // Copper pair: two thin conductors in the conduit.
+      ctx.strokeStyle = dead ? 'rgba(239, 98, 98, 0.35)' : 'rgba(159, 173, 191, 0.5)';
+      ctx.lineWidth = 1.3;
+      for (const side of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(p1.x + ox * side, p1.y + oy * side);
+        ctx.lineTo(p2.x + ox * side, p2.y + oy * side);
+        ctx.stroke();
+      }
+      // Belt chevrons: arrows scrolling along the conduit, the Factory's
+      // belt direction marks. They give the cable a machined rhythm.
+      const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+      const tieCount = Math.max(2, Math.floor(length / 34));
+      ctx.strokeStyle = dead ? 'rgba(239, 98, 98, 0.4)' : 'rgba(159, 173, 191, 0.38)';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (let i = 0; i < tieCount; i++) {
+        const p = (i / tieCount + t * 0.12 + linkPhase(link.id)) % 1;
+        ctx.save();
+        ctx.translate(p1.x + (p2.x - p1.x) * p, p1.y + (p2.y - p1.y) * p);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(-2.2, -3);
+        ctx.lineTo(1.6, 0);
+        ctx.lineTo(-2.2, 3);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // The belt's cargo. Healthy lanes stream packets both directions; dead
+    // lanes freeze them mid-route.
+    const count = Math.max(2, Math.floor(length / 58));
+    if (!dead) {
+      const color = compromised ? C.danger : C.signal;
+      for (let i = 0; i < count; i++) {
+        for (const dir of [0, 0.5]) {
+          const p = (t * 0.32 + linkPhase(link.id) + dir + i / count) % 1;
+          drawPacket(p1.x + (p2.x - p1.x) * p, p1.y + (p2.y - p1.y) * p, color);
+        }
+      }
+    } else {
+      for (let i = 0; i < count; i++) {
+        const p = (i + linkPhase(link.id)) / count;
+        drawPacket(p1.x + (p2.x - p1.x) * p, p1.y + (p2.y - p1.y) * p, C.danger, true);
+      }
+    }
   }
 
-  // Pending wire preview in signal color.
+  // Pending wire preview: an animated dashed leader from the source port.
   if (mode === 'wire' && wireFromId !== null) {
     const from = world.devices[wireFromId];
     if (from !== undefined) {
+      const p1 = edgeAnchor(from, mouse.x, mouse.y, deviceBoxWidth(from));
       ctx.save();
       ctx.strokeStyle = C.signal;
-      ctx.setLineDash([6, 5]);
+      ctx.lineCap = 'round';
       ctx.lineWidth = 3;
+      ctx.setLineDash([8, 6]);
+      ctx.lineDashOffset = -((now / 33) % 14);
       ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
+      ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(mouse.x, mouse.y);
       ctx.stroke();
       ctx.restore();
     }
   }
 
-  // Node cards: dark panels with a ring, kind dot, name, and address.
+  // Nodes are machines, not cards: a chassis plate with an inner face, a kind
+  // glyph on an accent plate, a breathing status LED, and a service stripe.
   for (const device of Object.values(world.devices)) {
     const accent = KIND_ACCENTS[device.kind] ?? C.muted;
     const boxWidth = deviceBoxWidth(device);
+    const x = device.x - boxWidth / 2;
+    const y = device.y - 26;
     const selected = device.id === selectedId;
     const wireSource = device.id === wireFromId;
     const compromised = device.compromised === true;
     const failed = device.failed === true;
-
-    ctx.font = "500 12.5px 'Geist Mono', ui-monospace, monospace";
-    ctx.fillStyle = C.panel;
-    // A failed node wears a red ring like a compromised one — the dead box
+    // A failed node wears the same red as a compromised one — the dead box
     // should jump out on the board before any ticket is read.
-    ctx.strokeStyle = failed || compromised ? C.danger : selected || wireSource ? C.signal : '#2a3038';
-    ctx.lineWidth = selected || wireSource || failed || compromised ? 1.6 : 1;
-    ctx.beginPath();
-    ctx.roundRect(device.x - boxWidth / 2, device.y - 26, boxWidth, 52, 10);
-    ctx.fill();
-    ctx.stroke();
+    const hot = failed || compromised;
 
-    // Compromise / failure marker.
-    if (failed || compromised) {
-      ctx.fillStyle = C.danger;
-      ctx.font = "600 12px 'Geist Mono', ui-monospace, monospace";
-      ctx.fillText(failed ? '×' : '⚠', device.x + boxWidth / 2 - 14, device.y - 8);
+    // Chassis plate: dark outer frame with a drop shadow, lighter machine face.
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+    ctx.fillStyle = '#11151a';
+    ctx.beginPath();
+    ctx.roundRect(x - 3, y - 3, boxWidth + 6, 58, 12);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.fillStyle = C.panel;
+    ctx.beginPath();
+    ctx.roundRect(x, y, boxWidth, 52, 9);
+    ctx.fill();
+
+    // Frame: red ring when hot, signal ring for selection / wire source.
+    ctx.lineWidth = selected || wireSource || hot ? 1.6 : 1;
+    ctx.strokeStyle = hot ? C.danger : selected || wireSource ? C.signal : '#323a46';
+    ctx.beginPath();
+    ctx.roundRect(x - 3, y - 3, boxWidth + 6, 58, 12);
+    ctx.stroke();
+    if (selected) {
+      // Marching-ants selection, the way factory builders mark a machine.
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.lineDashOffset = -((now / 60) % 9);
+      ctx.strokeStyle = C.signal;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(x - 6, y - 6, boxWidth + 12, 64, 14);
+      ctx.stroke();
+      ctx.restore();
     }
 
-    // Kind dot.
-    ctx.fillStyle = accent;
+    // Kind glyph on its own accent plate.
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
     ctx.beginPath();
-    ctx.arc(device.x - boxWidth / 2 + 13, device.y - 12, 3.2, 0, Math.PI * 2);
+    ctx.roundRect(x + 8, y + 8, 24, 24, 6);
+    ctx.fill();
+    ctx.fillStyle = accent;
+    ctx.font = "600 13px 'Geist Mono', ui-monospace, monospace";
+    ctx.textAlign = 'center';
+    ctx.fillText(KIND_ICON[device.kind] ?? '▪', x + 20, y + 25);
+
+    // Status LED: breathing while healthy, blinking when compromised.
+    const ledPulse = 0.5 + 0.5 * Math.sin(now / (compromised ? 170 : 900) + device.x % 7);
+    ctx.fillStyle = hot ? C.danger : `rgba(54, 201, 143, ${ledPulse.toFixed(2)})`;
+    ctx.beginPath();
+    ctx.arc(x + boxWidth - 13, y + 19, 3.4, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = C.ink;
+    // Name beside the glyph plate; the address (or kind) spans the full
+    // machine face below it.
     ctx.textAlign = 'left';
-    ctx.fillText(device.name, device.x - boxWidth / 2 + 24, device.y - 8);
-
+    ctx.fillStyle = C.ink;
+    ctx.font = "500 12.5px 'Geist Mono', ui-monospace, monospace";
+    ctx.fillText(device.name, x + 39, y + 22);
     const mgmt = device.interfaces.find((iface) => iface.ipv4 !== undefined)?.ipv4;
     ctx.fillStyle = C.muted;
     ctx.font = "500 11px 'Geist Mono', ui-monospace, monospace";
-    ctx.fillText(
-      mgmt === undefined ? device.kind : `${mgmt.address}/${mgmt.prefix}`,
-      device.x - boxWidth / 2 + 12,
-      device.y + 14,
-    );
+    ctx.fillText(mgmt === undefined ? device.kind : `${mgmt.address}/${mgmt.prefix}`, x + 10, y + 42);
+
+    // Service stripe along the bottom edge: green while serving, red when not.
+    ctx.fillStyle = hot ? C.danger : C.ok;
+    ctx.beginPath();
+    ctx.roundRect(x, y + 47, boxWidth, 5, [0, 0, 9, 9]);
+    ctx.fill();
     ctx.textAlign = 'center';
   }
 }
-
 /* ---- Top bar ---- */
 
 function renderHud(): void {
@@ -340,12 +555,13 @@ function renderHud(): void {
     const seasonStart = PRESTIGE_DAY_TICKS * (world.season - 1);
     const seasonDay = Math.floor((world.tick - seasonStart) / 24) + 1;
     const hour = world.tick % 24;
-    calendar.textContent = `S${world.season} D${seasonDay} ${String(hour).padStart(2, '0')}:00`;
+    calendar.textContent = `S${world.season} D${seasonDay} ${String(hour).padStart(2, '0')}:00 · ${clockSpeed}x`;
     const daysLeft = 30 - seasonDay;
     calendar.title =
-      daysLeft > 0
+      (daysLeft > 0
         ? `Season ${world.season} closes at day 30 — ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`
-        : `Season ${world.season} in progress — the season ${world.season - 1} scorecard is in your inbox`;
+        : `Season ${world.season} in progress — the season ${world.season - 1} scorecard is in your inbox`) +
+      ` — clock runs at ${clockSpeed}x${world.difficulty === 'hard' ? ' (hard mode doubles the pace again)' : ''}`;
   }
   const goalChip = document.querySelector<HTMLDivElement>('#season-goal');
   if (goalChip !== null) {
@@ -366,6 +582,11 @@ function renderHud(): void {
     const hard = world.difficulty === 'hard';
     hardButton.classList.toggle('active', hard);
     hardButton.textContent = hard ? 'Hard ✓' : 'Hard';
+  }
+  const speedButton = document.querySelector<HTMLButtonElement>('#speed-btn');
+  if (speedButton !== null) {
+    speedButton.textContent = `${clockSpeed}x`;
+    speedButton.classList.toggle('active', clockSpeed !== 1);
   }
 }
 
@@ -391,6 +612,33 @@ let lastAutoOpenId: string | null | undefined;
 function details(id: string, label: string, body: string): string {
   const open = sectionOpen[id] ?? true;
   return `<details data-section="${id}"${open ? ' open' : ''}><summary>${label}</summary><div class="section-body">${body}</div></details>`;
+}
+
+/** The SFP slot block: installed module with a remove button, or install buttons for the shop's optics. */
+function sfpSlotHtml(device: Device, ifaceName: string): string {
+  const installedId = device.modules?.[ifaceName];
+  if (installedId !== undefined) {
+    const mod = world.modules[installedId];
+    const name = mod === undefined ? installedId : mod.name;
+    const reach = mod?.reachClass === undefined ? '' : ` · ${mod.reachClass} reach`;
+    return `
+      <div class="row sfp-slot">
+        <span class="sfp-installed" title="installed optics">${esc(name)}${reach}</span>
+        <button class="module-remove" data-iface="${esc(ifaceName)}">remove</button>
+      </div>`;
+  }
+  const options = Object.values(world.modules)
+    .sort((a, b) => a.price - b.price)
+    .map(
+      (mod) =>
+        `<button class="module-install" data-iface="${esc(ifaceName)}" data-module="${esc(mod.id)}" title="${esc(mod.medium)} · ${esc(mod.reachClass)} reach">$${mod.price} ${esc(mod.name)}</button>`,
+    )
+    .join('');
+  return `
+    <div class="row sfp-slot">
+      <span class="muted">empty SFP slot</span>
+      ${options}
+    </div>`;
 }
 
 function renderInspector(): void {
@@ -437,9 +685,14 @@ function renderInspector(): void {
         ? '<span class="status up">UP</span>'
         : '<span class="status down">DOWN</span>';
       const toggle = `<button class="iface-toggle" data-iface="${esc(iface.name)}" data-enabled="${iface.enabled ? '1' : '0'}">${iface.enabled ? 'shut' : 'no shut'}</button>`;
+      // SFP slots show their optics state instead of IPv4 inputs — an SFP
+      // cage takes a module, not an address (GDD §11).
+      const slot = iface.kind === 'sfp' ? sfpSlotHtml(device, iface.name) : '';
       return `
         <div class="iface">
           <div class="name"><span class="ifname">${esc(iface.name)}</span> · ${esc(iface.kind)}${wired ? ' · wired' : ' · free'} ${toggle} ${status}</div>
+          ${slot}
+          ${slot === '' ? `
           <div class="row">
             <label>IPv4</label>
             <input class="wide ip-address" data-iface="${esc(iface.name)}" placeholder="e.g. 10.0.0.10"
@@ -454,7 +707,7 @@ function renderInspector(): void {
             <input class="wide ip-gateway" data-iface="${esc(iface.name)}" placeholder="gateway"
               value="${iface.ipv4Gateway === undefined ? '' : esc(iface.ipv4Gateway)}" />
             ${iface.kind !== 'wan' ? `<button class="dhcp-request" data-iface="${esc(iface.name)}">request DHCP</button>` : ''}
-          </div>
+          </div>` : ''}
           ${source !== '' ? `<div class="row muted source-note">${source}</div>` : ''}
         </div>`;
     })
@@ -627,6 +880,21 @@ function bindInspector(device: Device): void {
           ? { type: 'dhcpDiscover', deviceId: device.id }
           : { type: 'dhcpDiscover', deviceId: device.id, interfaceName: ifaceName },
       );
+    });
+  }
+  for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.module-install')) {
+    button.addEventListener('click', () => {
+      run({
+        type: 'installModule',
+        deviceId: device.id,
+        interfaceName: button.dataset.iface ?? '',
+        moduleId: button.dataset.module ?? '',
+      });
+    });
+  }
+  for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.module-remove')) {
+    button.addEventListener('click', () => {
+      run({ type: 'removeModule', deviceId: device.id, interfaceName: button.dataset.iface ?? '' });
     });
   }
   for (const button of inspectorEl.querySelectorAll<HTMLButtonElement>('button.iface-toggle')) {
@@ -817,11 +1085,68 @@ function renderContracts(): void {
       </div>`;
   });
 
+  // Lost side: churned clients whose device is still on the board, with the
+  // win-back campaign that courts them back — the paid counter to the rival.
+  const lostCards = world.contracts
+    .filter((c) => !c.active)
+    .filter((c, i, all) => all.findIndex((x) => x.client === c.client) === i)
+    .filter((c) => !world.contracts.some((x) => x.active && x.client === c.client))
+    .filter((c) => world.devices[c.deviceId] !== undefined)
+    .map((contract) => {
+      const device = world.devices[contract.deviceId];
+      const pitch = device?.failed || device?.compromised
+        ? '<span class="sla-breach">their box is still broken — fix it first</span>'
+        : '<span class="sla-ok">their box is healthy</span>';
+      return `
+      <div class="ticket contract">
+        <div class="client">${esc(contract.client)}</div>
+        <div class="title">${esc(device?.name ?? 'unknown device')} · lost</div>
+        <div class="meta">
+          ${pitch}
+          <button class="ticket-resolve contract-winback" data-client="${esc(contract.client)}" data-cost="150" title="Costs $150; lands only if their device is healthy">win-back — $150</button>
+        </div>
+      </div>`;
+    });
+  // Clients the rival itself holds (poached proposals): a harder win — the
+  // visit costs more and the rival meets the offer with a deeper discount.
+  const heldCards = CONTRACT_OFFERS
+    .filter((offer) => !world.contracts.some((c) => c.client === offer.client))
+    .filter((offer) => rivalHolds(world, offer.client))
+    .map((offer) => {
+      const device = Object.values(world.devices).find((d) => d.kind === offer.requiresKind);
+      const pitch = device === undefined
+        ? `<span class="muted">needs a ${offer.requiresKind} on the board before they will listen</span>`
+        : device.failed || device.compromised
+          ? '<span class="sla-breach">their box is still broken — fix it first</span>'
+          : '<span class="sla-ok">their box is healthy</span>';
+      return `
+      <div class="ticket contract">
+        <div class="client">${esc(offer.client)}</div>
+        <div class="title">${esc(device?.name ?? offer.requiresKind)} · held by SkyLink</div>
+        <div class="meta">
+          ${pitch}
+          <button class="ticket-resolve contract-winback" data-client="${esc(offer.client)}" data-cost="${RIVAL_HELD_COST}" title="SkyLink holds them: costs $${RIVAL_HELD_COST}, and they return at a deeper discount">win-back — $${RIVAL_HELD_COST}</button>
+        </div>
+      </div>`;
+    });
+  const lostCardsAll = [...lostCards, ...heldCards];
+  const lostSection = lostCardsAll.length === 0
+    ? ''
+    : `<div class="section-label">Lost clients</div>${lostCardsAll.join('')}`;
+
   contractsEl.innerHTML = `
     <div class="section-label">Active contracts — $${dailyTotal}/day total</div>
     ${activeCards.join('') || '<div class="muted" style="padding:0 4px 8px">No contracts yet. When clients write, their proposals land in your inbox.</div>'}
     <div class="section-label">Proposed contracts</div>
-    ${offerCards.join('') || '<div class="muted" style="padding:0 4px 8px">No open proposals — clients write once they hear about your shop.</div>'}`;
+    ${offerCards.join('') || '<div class="muted" style="padding:0 4px 8px">No open proposals — clients write once they hear about your shop.</div>'}
+    ${lostSection}`;
+
+  for (const button of contractsEl.querySelectorAll<HTMLButtonElement>('button.contract-winback')) {
+    button.addEventListener('click', () => {
+      run({ type: 'goodwill', action: 'win-back', client: button.dataset.client ?? '' });
+      renderContracts();
+    });
+  }
 
   for (const button of contractsEl.querySelectorAll<HTMLButtonElement>('button.contract-sign')) {
     button.addEventListener('click', () => {
@@ -850,6 +1175,7 @@ const OUTCOME_TEXT: Record<string, { text: string; tone: 'bad' | 'good' | 'neutr
   replaced: { text: 'Field team done: the new unit is in, wired like the old one. The client is back online.', tone: 'good' },
   matchRival: { text: 'Deal matched. The client stays — at a permanently cheaper fee.', tone: 'neutral' },
   declineRival: { text: 'You held the line. They stay — but weighing the rival cost a trust strike.', tone: 'bad' },
+  poachedByRival: { text: 'SkyLink got there first — the client signed with the rival before you could respond.', tone: 'bad' },
 };
 
 function renderMail(): void {
@@ -1224,6 +1550,253 @@ function renderShop(): void {
   });
 }
 
+/* ---- Research & technology tree (GDD §18) ---- */
+
+type ResearchNodeState = 'done' | 'running' | 'locked' | 'avail';
+
+function researchNodeState(id: string): ResearchNodeState {
+  if (world.research.completed.includes(id)) return 'done';
+  if (world.research.active?.nodeId === id) return 'running';
+  const node = world.researchNodes.find((n) => n.id === id);
+  if (node?.requires !== undefined && !world.research.completed.includes(node.requires)) return 'locked';
+  return 'avail';
+}
+
+function researchNodeById(id: string): { branch: (typeof RESEARCH_TREE)[number]; node: (typeof RESEARCH_TREE)[number]['nodes'][number] } | null {
+  for (const branch of RESEARCH_TREE) {
+    const node = branch.nodes.find((n) => n.id === id);
+    if (node !== undefined) return { branch, node };
+  }
+  return null;
+}
+
+type ResearchRef = {
+  branch: (typeof RESEARCH_TREE)[number];
+  node: (typeof RESEARCH_TREE)[number]['nodes'][number];
+};
+
+/** True when the node matches the header search: name, capability, era, or branch. */
+function researchMatches(ref: ResearchRef, q: string): boolean {
+  if (q === '') return true;
+  return (
+    ref.node.name.toLowerCase().includes(q) ||
+    ref.node.capability.toLowerCase().includes(q) ||
+    ref.node.era.toLowerCase().includes(q) ||
+    ref.branch.name.toLowerCase().includes(q)
+  );
+}
+
+/** The rows the list shows: the selected branch while browsing, every match while searching. */
+function researchVisibleRows(): ResearchRef[] {
+  const q = researchQuery.trim().toLowerCase();
+  const branches =
+    q === '' ? [RESEARCH_TREE.find((b) => b.key === researchBranch) ?? RESEARCH_TREE[0]] : RESEARCH_TREE;
+  const rows: ResearchRef[] = [];
+  for (const branch of branches) {
+    if (branch === undefined) continue;
+    for (const node of branch.nodes) {
+      const ref: ResearchRef = { branch, node };
+      if (researchMatches(ref, q)) rows.push(ref);
+    }
+  }
+  return rows;
+}
+
+/** Escape then wrap the first case-insensitive occurrence of the query in a <mark>. */
+function researchHl(value: string, q: string): string {
+  if (q === '') return esc(value);
+  const i = value.toLowerCase().indexOf(q);
+  if (i < 0) return esc(value);
+  return esc(value.slice(0, i)) + '<mark>' + esc(value.slice(i, i + q.length)) + '</mark>' + esc(value.slice(i + q.length));
+}
+
+/** Point the selection at the first visible non-locked row (fallback: the first row). */
+function syncResearchSelection(): void {
+  const rows = researchVisibleRows();
+  researchNodeId = (rows.find((r) => researchNodeState(r.node.id) !== 'locked') ?? rows[0])?.node.id ?? '';
+}
+
+function renderResearch(): void {
+  const panel = document.querySelector<HTMLDivElement>('#research-panel');
+  const view = document.querySelector<HTMLDivElement>('#research-view');
+  const insightChip = document.querySelector<HTMLElement>('#research-insight');
+  const hudBtn = document.querySelector<HTMLButtonElement>('#research-btn');
+  if (panel === null || view === null) return;
+  panel.classList.toggle('open', researchOpen);
+  if (insightChip !== null) insightChip.textContent = String(world.insight);
+
+  // The HUD pill doubles as the project progress readout while the lab works.
+  const active = world.research.active;
+  if (hudBtn !== null) {
+    hudBtn.classList.toggle('running', active !== undefined);
+    if (active !== undefined) {
+      const ref = researchNodeById(active.nodeId);
+      hudBtn.textContent = `Research · ${ref?.node.name ?? active.nodeId} · ${active.remaining}t`;
+    } else {
+      hudBtn.textContent = 'Research';
+    }
+  }
+  if (!researchOpen) return;
+
+  const branch = RESEARCH_TREE.find((b) => b.key === researchBranch) ?? RESEARCH_TREE[0];
+  if (branch === undefined) return;
+  const q = researchQuery.trim().toLowerCase();
+  const rows = researchVisibleRows();
+  if (!rows.some((r) => r.node.id === researchNodeId)) syncResearchSelection();
+
+  const rail = RESEARCH_TREE.map((b) => {
+    const done = b.nodes.filter((n) => world.research.completed.includes(n.id)).length;
+    const hidden = q !== '' && !b.nodes.some((n) => researchMatches({ branch: b, node: n }, q));
+    return `<button class="branch${b.key === branch.key ? ' active' : ''}${hidden ? ' hide' : ''}" data-branch="${esc(b.key)}" title="${esc(b.choice)}">
+      <span>${esc(b.name)}</span>
+      <span class="cnt${done === b.nodes.length ? ' full' : ''}">${done}/${b.nodes.length}</span>
+    </button>`;
+  }).join('');
+
+  const rowParts: string[] = [];
+  let lastBranchKey = '';
+  for (const ref of rows) {
+    if (q !== '' && ref.branch.key !== lastBranchKey) {
+      lastBranchKey = ref.branch.key;
+      rowParts.push(`<div class="ngroup">${esc(ref.branch.name)}</div>`);
+    }
+    const n = ref.node;
+    const state = researchNodeState(n.id);
+    const cost = researchCost(n, world.research.labPriorsGranted, world.research.labPriorsUsed);
+    const costLine = `⬡ ${cost.insight}${cost.insight !== n.insight ? ` <s>${n.insight}</s>` : ''} · $${n.cash} · ${n.ticks}t`;
+    const badge = state === 'done' ? '✓' : state === 'running' ? `${world.research.active?.remaining ?? 0}t` : state === 'locked' ? '🔒' : '';
+    const prog = state === 'running' && n.ticks > 0
+      ? `<span class="prog" style="width:${Math.round((1 - (world.research.active?.remaining ?? 0) / n.ticks) * 100)}%"></span>`
+      : '';
+    const sub = q === '' ? esc(n.capability) : researchHl(n.capability, q);
+    rowParts.push(`<button class="nrow ${state}${n.id === researchNodeId ? ' sel' : ''}" data-node="${esc(n.id)}">
+      <span class="led"></span>
+      <span class="n-body"><span class="n-name">${researchHl(n.name, q)}</span><span class="n-sub">${sub}</span></span>
+      <span class="n-cost">${costLine}</span>
+      ${badge !== '' ? `<span class="n-state">${badge}</span>` : ''}${prog}
+    </button>`);
+  }
+  if (rowParts.length === 0) {
+    rowParts.push(`<div class="nempty">No node matches “${esc(researchQuery)}”.<br />Search covers names, capabilities, eras, and branches.</div>`);
+  }
+
+  const ref = researchNodeById(researchNodeId);
+  let detail = '';
+  if (ref !== null) {
+    const { node } = ref;
+    const state = researchNodeState(node.id);
+    const cost = researchCost(node, world.research.labPriorsGranted, world.research.labPriorsUsed);
+    const activeElsewhere = world.research.active !== undefined && world.research.active.nodeId !== node.id;
+    let button: string;
+    if (state === 'done') button = `<button class="r-btn done" disabled>✓ Researched</button>`;
+    else if (state === 'running') button = `<button class="r-btn primary" disabled>Researching… ${world.research.active?.remaining ?? 0}t left</button>`;
+    else if (state === 'locked') {
+      const prev = researchNodeById(node.requires ?? '');
+      button = `<button class="r-btn" disabled>Locked — needs ${esc(prev?.node.name ?? 'the previous node')}</button>`;
+    } else if (activeElsewhere) {
+      const busy = researchNodeById(world.research.active!.nodeId);
+      button = `<button class="r-btn" disabled>Lab busy — ${esc(busy?.node.name ?? 'another project')}</button>`;
+    } else if (world.insight < cost.insight) {
+      button = `<button class="r-btn" disabled>Need ${cost.insight - world.insight} more insight</button>`;
+    } else if (world.cash < cost.cash) {
+      button = `<button class="r-btn" disabled>Need $${cost.cash - world.cash} more cash</button>`;
+    } else {
+      button = `<button class="r-btn primary" data-start="${esc(node.id)}">Start research</button>`;
+    }
+    detail = `
+      <div class="d-top"><span class="d-name">${esc(node.name)}</span><span class="d-era">${esc(node.era)}</span></div>
+      <p class="d-cap"><b>Unlocks the decision:</b> ${esc(node.capability)}</p>
+      <div class="d-costs">
+        <span class="chip ins">⬡ ${cost.insight}${cost.insight !== node.insight ? ` <s style="opacity:.6">${node.insight}</s>` : ''}</span>
+        <span class="chip">$${node.cash}</span>
+        <span class="chip">${node.ticks} ticks</span>
+        ${cost.insight !== node.insight ? '<span class="chip disc">lab prior −20% (V2.2-3.5)</span>' : ''}
+      </div>
+      ${node.resource !== undefined ? `<div class="d-res">Resource: <a href="${esc(node.resource)}" target="_blank" rel="noreferrer">source link</a></div>` : ''}
+      ${state === 'locked' ? '<div class="d-req">Requires the previous node in this branch.</div>' : ''}
+      <div class="d-actions">${button}<span class="d-note">one project at a time</span></div>`;
+  }
+
+  // Lab bench (V2.2-3.5): hypothesis → measurement → read the notebook.
+  // The form's values persist in labForm so the 2 Hz re-render never wipes input.
+  const labSelected = world.experiments.find((t) => t.id === labTemplateId) ?? null;
+  const benchKind = (kind: string): boolean => Object.values(world.devices).some((d) => d.kind === kind && !d.failed);
+  const labTemplateRows = world.experiments
+    .map((t) => {
+      const priorEarned = t.grantsPrior !== undefined && world.research.labPriorsGranted.includes(t.grantsPrior);
+      const badge = t.requiresKind !== undefined ? (benchKind(t.requiresKind) ? 'bench ok' : 'needs bench') : '';
+      return `<button class="lab-t${t.id === labTemplateId ? ' sel' : ''}" data-lab="${esc(t.id)}">
+        <span class="led"></span>
+        <span class="lt-body"><span class="lt-name">${esc(t.name)}</span><span class="lt-metric">${esc(t.metric)}</span></span>
+        <span class="lt-side"><span class="chip ins">⬡ ${t.baseInsight}</span>${badge !== '' ? `<span class="lt-badge${badge === 'bench ok' ? ' ok' : ''}">${badge}</span>` : ''}${priorEarned ? '<span class="lt-badge prior">prior earned</span>' : ''}</span>
+      </button>`;
+    })
+    .join('');
+  let labForm = '';
+  if (labSelected !== null) {
+    const band = labNoiseBand(labSelected, Number(labFormState.reps) || 1);
+    labForm = `
+      <div class="lab-form">
+        <div class="lf-title">Hypothesis — ${esc(labSelected.name)}</div>
+        <label>predicted value (${esc(labSelected.unit.trim())})<input id="lab-predicted" type="number" step="any" value="${esc(labFormState.predicted)}" placeholder="your estimate"></label>
+        <label>tolerance ±<input id="lab-tolerance" type="number" step="any" value="${esc(labFormState.tolerance)}" placeholder="0.5"></label>
+        <label>repetitions (1–12)<input id="lab-reps" type="number" min="1" max="12" value="${esc(labFormState.reps)}"></label>
+        <div class="lf-band">instrument precision at ${esc(labFormState.reps)} reps: ±${(Math.round(band * 100) / 100).toFixed(2)}${esc(labSelected.unit)}</div>
+        <button class="r-btn primary" data-lab-run="${esc(labSelected.id)}">Run experiment</button>
+        <div class="lf-note">tolerance must cover the noise band or the run is inconclusive — rerun once with more repetitions for half pay</div>
+      </div>`;
+  }
+  const labRecords = world.lab.records
+    .slice()
+    .reverse()
+    .map((r) => {
+      const t = world.experiments.find((x) => x.id === r.templateId);
+      const unit = t?.unit ?? '';
+      const stateChip = !r.conclusive
+        ? '<span class="lt-badge">inconclusive</span>'
+        : r.validity === 'reduced'
+          ? '<span class="lt-badge">reduced validity</span>'
+          : '';
+      const verdict =
+        r.interpretation === 'correct'
+          ? `<span class="lt-badge ok">+${r.rewardInsight ?? 0} insight</span>`
+          : r.interpretation === 'wrong'
+            ? '<span class="lt-badge bad">misread · 0</span>'
+            : r.rewardInsight !== undefined
+              ? `<span class="lt-badge ok">+${r.rewardInsight} insight</span>`
+              : `<span class="lab-read"><button class="r-btn" data-lab-read="${esc(r.id)}" data-conclusion="confirmed">Confirm</button><button class="r-btn" data-lab-read="${esc(r.id)}" data-conclusion="refuted">Refute</button></span>`;
+      return `<div class="lab-rec">
+        <span class="lr-main">${r.duplicate === true ? 'repeat · ' : ''}${esc(t?.name ?? r.templateId)} measured <b>${r.measurement}${esc(unit)}</b> (predicted ${r.predicted} ±${r.tolerance})</span>
+        ${stateChip}${verdict}
+      </div>`;
+    })
+    .join('');
+  const labHtml = `
+    <div class="lab">
+      <div class="chain-head">
+        <div class="name">Lab bench</div>
+        <div class="choice">State a falsifiable hypothesis, run it, read the result — correct readings pay Insight, and a first-of-its-kind run earns a lab prior (V2.2-3.5)</div>
+      </div>
+      <div class="lab-body">
+        <div class="lab-templates">${labTemplateRows || '<div class="lt-empty">no experiment templates</div>'}</div>
+        ${labForm}
+        <div class="lab-notebook"><div class="ln-title">Notebook</div>${labRecords || '<div class="lt-empty">no runs yet</div>'}</div>
+      </div>
+    </div>`;
+
+  view.innerHTML = `
+    <div class="branches">${rail}</div>
+    <div class="body">
+      <div class="chainwrap">
+        <div class="nlist">${rowParts.join('')}</div>
+        <div class="detail">${detail}</div>
+      </div>
+      ${labHtml}
+    </div>`;
+  // Keyboard navigation re-renders the whole panel; keep the selected row on screen.
+  view.querySelector<HTMLElement>('.nrow.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
 /* ---- Prestige scorecard (day-30 endgame, per season) ---- */
 
 function prestigeRank(career: number): string {
@@ -1302,6 +1875,7 @@ function render(): void {
   renderTickets();
   renderMail();
   renderShop();
+  renderResearch();
   renderPrestige();
   renderEvents();
   if (consoleTab === 'diag') renderDiagnostics();
@@ -1472,7 +2046,11 @@ document.querySelector('#inspector-close')?.addEventListener('click', () => {
 });
 inboxBtn?.addEventListener('click', () => {
   mailPanelOpen = !mailPanelOpen;
-  if (mailPanelOpen) selectedId = null;
+  if (mailPanelOpen) {
+    selectedId = null;
+    researchOpen = false;
+    shopOpen = false;
+  }
   render();
 });
 document.querySelector('#mail-close')?.addEventListener('click', () => {
@@ -1484,12 +2062,160 @@ document.querySelector('#shop-btn')?.addEventListener('click', () => {
   if (shopOpen) {
     selectedId = null;
     mailPanelOpen = false;
+    researchOpen = false;
   }
   render();
 });
 document.querySelector('#shop-close')?.addEventListener('click', () => {
   shopOpen = false;
   render();
+});
+document.querySelector('#research-btn')?.addEventListener('click', () => {
+  researchOpen = !researchOpen;
+  if (researchOpen) {
+    selectedId = null;
+    mailPanelOpen = false;
+    shopOpen = false;
+  }
+  render();
+});
+document.querySelector('#research-close')?.addEventListener('click', () => {
+  researchOpen = false;
+  render();
+});
+document.querySelector('#research-view')?.addEventListener('click', (event) => {
+  const target = event.target as HTMLElement;
+  const branchBtn = target.closest<HTMLElement>('[data-branch]');
+  if (branchBtn !== null) {
+    researchBranch = branchBtn.dataset.branch ?? researchBranch;
+    // Picking a branch leaves search mode; restore the query state and input.
+    researchQuery = '';
+    const search = document.querySelector<HTMLInputElement>('#research-search');
+    if (search !== null) search.value = '';
+    const branch = RESEARCH_TREE.find((b) => b.key === researchBranch);
+    const first = branch?.nodes.find((n) => researchNodeState(n.id) !== 'locked') ?? branch?.nodes[0];
+    if (first !== undefined) researchNodeId = first.id;
+    render();
+    return;
+  }
+  const nodeBtn = target.closest<HTMLElement>('[data-node]');
+  if (nodeBtn !== null) {
+    researchNodeId = nodeBtn.dataset.node ?? researchNodeId;
+    render();
+    return;
+  }
+  const startBtn = target.closest<HTMLElement>('[data-start]');
+  if (startBtn !== null) {
+    run({ type: 'startResearch', nodeId: startBtn.dataset.start ?? '' });
+    return;
+  }
+  const labBtn = target.closest<HTMLElement>('[data-lab]');
+  if (labBtn !== null) {
+    labTemplateId = labBtn.dataset.lab ?? '';
+    renderResearch();
+    return;
+  }
+  const labRunBtn = target.closest<HTMLElement>('[data-lab-run]');
+  if (labRunBtn !== null) {
+    run({
+      type: 'runExperiment',
+      templateId: labRunBtn.dataset.labRun ?? '',
+      predicted: Number(labFormState.predicted),
+      tolerance: Number(labFormState.tolerance),
+      repetitions: Number(labFormState.reps),
+    });
+    renderResearch();
+    return;
+  }
+  const labReadBtn = target.closest<HTMLElement>('[data-lab-read]');
+  if (labReadBtn !== null) {
+    run({
+      type: 'interpretExperiment',
+      recordId: labReadBtn.dataset.labRead ?? '',
+      conclusion: labReadBtn.dataset.conclusion === 'refuted' ? 'refuted' : 'confirmed',
+    });
+    renderResearch();
+  }
+});
+// Keep the hypothesis form's values across the 2 Hz re-render, and update the
+// live precision readout as repetitions change without a full repaint.
+document.querySelector('#research-view')?.addEventListener('input', (event) => {
+  const input = event.target as HTMLInputElement;
+  if (input.id === 'lab-predicted') labFormState.predicted = input.value;
+  else if (input.id === 'lab-tolerance') labFormState.tolerance = input.value;
+  else if (input.id === 'lab-reps') labFormState.reps = input.value;
+  else return;
+  const band = document.querySelector<HTMLElement>('.lf-band');
+  const template = world.experiments.find((t) => t.id === labTemplateId);
+  if (band !== null && template !== undefined) {
+    const value = labNoiseBand(template, Number(labFormState.reps) || 1);
+    band.textContent = `instrument precision at ${labFormState.reps} reps: ±${(Math.round(value * 100) / 100).toFixed(2)}${template.unit}`;
+  }
+});
+// Header search: filters across every branch at once and keeps the selection on
+// the first visible non-locked row. The input lives in the panel head (static
+// markup), so its value survives the 2 Hz re-render naturally.
+document.querySelector('#research-search')?.addEventListener('input', (event) => {
+  researchQuery = (event.target as HTMLInputElement).value;
+  syncResearchSelection();
+  renderResearch();
+});
+// Keyboard layer for the research panel: / or Ctrl+K focuses the header search,
+// arrows walk the visible rows, Enter starts the selected project, and Esc
+// clears the search first — the global Esc handler then closes the panel.
+function moveResearchSelection(delta: number): void {
+  const rows = researchVisibleRows();
+  if (rows.length === 0) return;
+  const index = rows.findIndex((r) => r.node.id === researchNodeId);
+  const next = rows[Math.min(rows.length - 1, Math.max(0, (index < 0 ? 0 : index) + delta))];
+  if (next !== undefined) {
+    researchNodeId = next.node.id;
+    researchBranch = next.branch.key;
+    renderResearch();
+  }
+}
+window.addEventListener('keydown', (event) => {
+  if (!researchOpen) return;
+  const search = document.querySelector<HTMLInputElement>('#research-search');
+  const inSearch =
+    search !== null && (event.target === search || (event.target instanceof HTMLElement && search.contains(event.target)));
+  const key = event.key;
+  if (
+    ((key === '/' && !inSearch) || ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'k')) &&
+    !(event.target instanceof HTMLInputElement)
+  ) {
+    event.preventDefault();
+    search?.focus();
+    search?.select();
+    return;
+  }
+  if (key === 'Escape') {
+    if (researchQuery.trim() !== '') {
+      researchQuery = '';
+      if (search !== null) search.value = '';
+      syncResearchSelection();
+      renderResearch();
+      search?.focus();
+    } else if (inSearch) {
+      search?.blur();
+    }
+    return;
+  }
+  if (key === 'ArrowDown' || key === 'ArrowUp') {
+    if (inSearch) event.preventDefault();
+    else if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+    moveResearchSelection(key === 'ArrowDown' ? 1 : -1);
+    return;
+  }
+  if (inSearch) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  if (key === 'Enter') {
+    event.preventDefault();
+    const ref = researchNodeById(researchNodeId);
+    if (ref !== null && researchNodeState(ref.node.id) === 'avail' && world.research.active === undefined) {
+      run({ type: 'startResearch', nodeId: ref.node.id });
+    }
+  }
 });
 document.querySelector('#mail-tab-mail')?.addEventListener('click', () => {
   mailTab = 'mail';
@@ -1513,11 +2239,13 @@ clockButton?.addEventListener('click', () => {
   render();
 });
 
-// The clock ticks twice per second normally; hard mode doubles the pace, so
-// SLAs, wear rolls, and incidents all land twice as often in real time.
+// The clock ticks twice per second at 1x; the speed buttons scale that pace
+// (0.5x watches, 10x fast-forwards), and hard mode halves the base — SLAs,
+// wear rolls, and incidents all land accordingly in real time.
 let clockTimer = 0;
+const BASE_TICK_MS = 500;
 function tickIntervalMs(): number {
-  return world.difficulty === 'hard' ? 250 : 500;
+  return (BASE_TICK_MS / clockSpeed) * (world.difficulty === 'hard' ? 0.5 : 1);
 }
 function startClock(): void {
   window.clearInterval(clockTimer);
@@ -1529,12 +2257,32 @@ function startClock(): void {
 }
 startClock();
 
+// The board is an animation surface: packet belts, LEDs, and selection ants
+// redraw every frame; the sim underneath only changes through commands.
+requestAnimationFrame(function boardLoop() {
+  drawBoard(performance.now());
+  requestAnimationFrame(boardLoop);
+});
+
 const hardButton = document.querySelector<HTMLButtonElement>('#hard-btn');
 hardButton?.addEventListener('click', () => {
   applyCommand(world, { type: 'setDifficulty', difficulty: world.difficulty === 'hard' ? 'normal' : 'hard' });
   startClock();
   render();
 });
+
+// The speed button cycles the clock's pacing — presentation pacing only;
+// the sim's rules are per-tick and never change with real time. The same
+// cycle runs from the keyboard (V).
+const SPEED_CYCLE = [1, 2, 5, 10, 0.5];
+function cycleSpeed(): void {
+  const index = SPEED_CYCLE.indexOf(clockSpeed);
+  clockSpeed = SPEED_CYCLE[(index + 1) % SPEED_CYCLE.length]!;
+  startClock();
+  render();
+}
+const speedButton = document.querySelector<HTMLButtonElement>('#speed-btn');
+speedButton?.addEventListener('click', cycleSpeed);
 
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
@@ -1546,11 +2294,22 @@ window.addEventListener('keydown', (event) => {
     mailPanelOpen = !mailPanelOpen;
     render();
   }
+  if (key === 'v') cycleSpeed();
   if (key === 'b') {
     shopOpen = !shopOpen;
     if (shopOpen) {
       selectedId = null;
       mailPanelOpen = false;
+      researchOpen = false;
+    }
+    render();
+  }
+  if (key === 'r') {
+    researchOpen = !researchOpen;
+    if (researchOpen) {
+      selectedId = null;
+      mailPanelOpen = false;
+      shopOpen = false;
     }
     render();
   }
@@ -1564,6 +2323,7 @@ window.addEventListener('keydown', (event) => {
     selectedId = null;
     mailPanelOpen = false;
     shopOpen = false;
+    researchOpen = false;
     setMode('select');
   }
   if (key === 'delete' && selectedId !== null) {
@@ -1666,6 +2426,37 @@ if (ifdownParam !== null) {
     applyCommand(world, { type: 'setInterfaceEnabled', deviceId: device.id, interfaceName: ifaceName, enabled: false });
   }
 }
+// ?optics=1 builds the optics demo scene (GDD §11): two switches a long run
+// apart, the far end on B+ while the near end carries C+ — wiring them logs
+// the reach warning. A third switch keeps its SFP slot empty for the
+// install-buttons view, and a copper run shows the belt contrast.
+if (params.get('optics') === '1') {
+  world.cash += 10000;
+  // The demo adds six devices to the prototype board: open the rack first.
+  world.rackTier = RACK_TIERS.length - 1;
+  applyCommand(world, { type: 'placeDevice', defId: 'switch-managed-8p', name: 'core-a', x: 300, y: 620 });
+  applyCommand(world, { type: 'placeDevice', defId: 'switch-managed-8p', name: 'core-b', x: 1300, y: 620 });
+  applyCommand(world, { type: 'placeDevice', defId: 'switch-managed-8p', name: 'edge-sw', x: 300, y: 880 });
+  applyCommand(world, { type: 'placeDevice', defId: 'desktop', name: 'desk-1', x: 700, y: 880 });
+  applyCommand(world, { type: 'placeDevice', defId: 'router-edge', name: 'uplink-rtr', x: 1300, y: 880 });
+  applyCommand(world, { type: 'placeDevice', defId: 'router-edge', name: 'metro-rtr', x: 1300, y: 1120 });
+  const a = Object.values(world.devices).find((d) => d.name === 'core-a');
+  const b = Object.values(world.devices).find((d) => d.name === 'core-b');
+  const edge = Object.values(world.devices).find((d) => d.name === 'edge-sw');
+  const desk = Object.values(world.devices).find((d) => d.name === 'desk-1');
+  const uplink = Object.values(world.devices).find((d) => d.name === 'uplink-rtr');
+  const metro = Object.values(world.devices).find((d) => d.name === 'metro-rtr');
+  if (a !== undefined && b !== undefined && edge !== undefined && desk !== undefined && uplink !== undefined && metro !== undefined) {
+    applyCommand(world, { type: 'installModule', deviceId: a.id, interfaceName: 'sfp0', moduleId: 'optics-cplus' });
+    applyCommand(world, { type: 'installModule', deviceId: b.id, interfaceName: 'sfp0', moduleId: 'optics-bplus' });
+    applyCommand(world, { type: 'wireLink', a: { deviceId: a.id, interfaceName: 'sfp0' }, b: { deviceId: b.id, interfaceName: 'sfp0' } });
+    applyCommand(world, { type: 'wireLink', a: { deviceId: a.id, interfaceName: 'eth0' }, b: { deviceId: edge.id, interfaceName: 'eth0' } });
+    applyCommand(world, { type: 'wireLink', a: { deviceId: edge.id, interfaceName: 'eth1' }, b: { deviceId: desk.id, interfaceName: 'eth0' } });
+    applyCommand(world, { type: 'wireLink', a: { deviceId: b.id, interfaceName: 'eth0' }, b: { deviceId: uplink.id, interfaceName: 'eth0' } });
+    // The metro router ships its optics factory-installed; uplink-rtr's slot stays empty for the shopping view.
+    applyCommand(world, { type: 'installModule', deviceId: metro.id, interfaceName: 'sfp0', moduleId: 'optics-cplus' });
+  }
+}
 const selectName = params.get('select');
 if (selectName !== null) {
   const device = Object.values(world.devices).find((d) => d.name === selectName);
@@ -1686,6 +2477,33 @@ if (params.get('tab') === 'tickets') {
 } else if (params.get('tab') === 'contracts') {
   mailPanelOpen = true;
   mailTab = 'contracts';
+} else if (params.get('tab') === 'research') {
+  researchOpen = true;
+}
+// ?researchq=<text> opens the panel with the header search prefilled —
+// reproduces filtered list states for captures without typing.
+const researchQParam = params.get('researchq');
+if (researchQParam !== null) {
+  researchOpen = true;
+  researchQuery = researchQParam;
+  syncResearchSelection();
+  const searchInput = document.querySelector<HTMLInputElement>('#research-search');
+  if (searchInput !== null) searchInput.value = researchQParam;
+}
+// ?lab=<templateId> selects a bench experiment, ?labrun=<predicted>,<tolerance>,<reps>
+// runs one, and ?labread=confirmed|refuted reads the latest record — capture
+// helpers that reproduce lab states without waiting on interaction.
+const labParam = params.get('lab');
+if (labParam !== null && world.experiments.some((t) => t.id === labParam)) labTemplateId = labParam;
+const labRunParam = params.get('labrun');
+if (labRunParam !== null) {
+  const [predicted, tolerance, repetitions] = labRunParam.split(',').map(Number);
+  applyCommand(world, { type: 'runExperiment', templateId: labParam ?? world.experiments[0]?.id ?? '', predicted: predicted ?? 0, tolerance: tolerance ?? 1, repetitions: repetitions ?? 6 });
+}
+const labReadParam = params.get('labread');
+if (labReadParam === 'confirmed' || labReadParam === 'refuted') {
+  const latest = world.lab.records.find((r) => r.rewardInsight === undefined);
+  if (latest !== undefined) applyCommand(world, { type: 'interpretExperiment', recordId: latest.id, conclusion: labReadParam });
 }
 const openMailParam = params.get('openmail');
 if (openMailParam !== null) {
@@ -1693,6 +2511,13 @@ if (openMailParam !== null) {
   mailTab = 'mail';
 }
 if (params.get('clock') === 'run') clockRunning = true;
+// ?speed=<n> sets the clock pacing multiplier at load — reproduces the
+// speed-button state for captures.
+const speedParam = Number(params.get('speed') ?? '');
+if (Number.isFinite(speedParam) && speedParam > 0) {
+  clockSpeed = speedParam;
+  startClock();
+}
 // ?contract=<offerNamePrefix> signs the first matching offer with its first
 // required-kind device — reproduces signed-contract states for captures.
 // The signing itself runs after ?fast= below, so the fresh term (and any
@@ -1743,7 +2568,7 @@ if (replaceActionParam !== null) {
     if (letter !== undefined) applyCommand(world, { type: 'mailAction', mailId: letter.id, command: `orderReplacement:${device.id}` });
   }
 }
-const rackParam = Number(params.get('rack') ?? '');
+const rackParam = params.get('rack') === null ? Number.NaN : Number(params.get('rack'));
 if (Number.isInteger(rackParam) && rackParam >= 0) world.rackTier = rackParam;
 if (params.get('fillrack') === '1') {
   world.cash = Math.max(world.cash, 100000);
@@ -1778,6 +2603,31 @@ if (params.get('incident') === 'outdated-firmware') {
   }
 }
 // Let the ambient roll run while the clock advances (?fast=<ticks>).
+// ?cash=<n> sets the shop's cash directly — reproduces funded states for
+// captures. Runs first so every later param sees the wallet it needs.
+const cashParam = Number(params.get('cash') ?? '');
+if (Number.isInteger(cashParam) && cashParam > 0) world.cash = cashParam;
+// ?research=<nodeId> starts that project at load — reproduces the running
+// state for captures without scripting a click. Selects the node too, so the
+// panel opens on the right branch.
+const researchParam = params.get('research');
+if (researchParam !== null) {
+  const ref = researchNodeById(researchParam);
+  if (ref !== null) {
+    researchBranch = ref.branch.key;
+    researchNodeId = ref.node.id;
+  }
+  applyCommand(world, { type: 'startResearch', nodeId: researchParam });
+}
+
+// ?undercut=1 puts a synthetic strong season into prestigeHistory so the
+// rival's undercut applies to new signings — reproduces undercut states for
+// captures. Runs before ?fast so proposal letters delivered by the clock
+// advance see the rival's radar state.
+if (params.get('undercut') === '1') {
+  world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+}
+
 const fast = Number(params.get('fast') ?? '');
 if (Number.isInteger(fast) && fast > 0) advanceTicks(world, fast);
 
@@ -1817,6 +2667,24 @@ if (params.get('poach') === '1' || params.get('poamatch') === '1') {
   const letter = maybeRivalPoach(world, 999);
   if (params.get('poamatch') === '1' && letter !== undefined) {
     applyCommand(world, { type: 'mailAction', mailId: letter.id, command: letter.actions[0]!.command });
+  }
+}
+
+// ?taunt=1 reproduces the rival's gloat after a client churn: fails the
+// active contract's device and rolls the three daily strikes that churn it.
+// Runs after the delayed ?contract= signing so there is a contract to lose.
+// ?winback=1 continues the story: repairs the dead box and runs the
+// win-back campaign, so the client comes back at the rival's price.
+if (params.get('taunt') === '1') {
+  const contracted = world.contracts.find((c) => c.active);
+  const device = contracted === undefined ? undefined : world.devices[contracted.deviceId];
+  if (device !== undefined && contracted !== undefined) {
+    applyCommand(world, { type: 'triggerIncident', kind: 'wear-failure', targetDeviceId: device.id });
+    advanceTicks(world, 72);
+    if (params.get('winback') === '1') {
+      applyCommand(world, { type: 'repairDevice', deviceId: device.id });
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: contracted.client });
+    }
   }
 }
 
