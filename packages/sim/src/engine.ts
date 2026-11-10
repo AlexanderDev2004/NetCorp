@@ -1,4 +1,4 @@
-import type { Command, Contract, Device, DeviceDef, Endpoint, Event, Interface as NetInterface, Mail, PrestigeBreakdown, SeasonGoalId, Ticket, World } from './types.ts';
+import type { Command, Contract, Device, DeviceDef, Endpoint, Event, ExperimentTemplate, Interface as NetInterface, LabRecord, Link, Mail, ModuleDef, PrestigeBreakdown, ReachClass, ResearchNodeDef, SeasonGoalId, Ticket, World } from './types.ts';
 import { log, nextId, nextRandom, randomMac } from './state.ts';
 import { findDhcpServers, findPath } from './net.ts';
 import { isValidIpv4, isValidPrefix } from './ip.ts';
@@ -9,7 +9,7 @@ export { createWorld } from './state.ts';
 export * from './types.ts';
 export { findPath } from './net.ts';
 
-const DEFAULT_INTERFACES: Record<string, { name: string; kind: NetInterface['kind'] }[]> = {
+const DEFAULT_INTERFACES: Record<string, { name: string; kind: NetInterface['kind']; role?: 'uplink' }[]> = {
   desktop: [{ name: 'eth0', kind: 'ethernet' }],
   server: [
     { name: 'eth0', kind: 'ethernet' },
@@ -29,27 +29,38 @@ const DEFAULT_INTERFACES: Record<string, { name: string; kind: NetInterface['kin
     { name: 'eth3', kind: 'ethernet' },
     { name: 'eth4', kind: 'ethernet' },
     { name: 'eth5', kind: 'ethernet' },
+    { name: 'sfp0', kind: 'sfp', role: 'uplink' },
   ],
   'router-soho': [
-    { name: 'wan1', kind: 'wan' },
+    { name: 'wan1', kind: 'wan', role: 'uplink' },
     { name: 'eth0', kind: 'ethernet' },
     { name: 'eth1', kind: 'ethernet' },
     { name: 'wifi0', kind: 'wifi' },
   ],
   'router-edge': [
-    { name: 'wan1', kind: 'wan' },
-    { name: 'wan2', kind: 'wan' },
+    { name: 'wan1', kind: 'wan', role: 'uplink' },
+    { name: 'wan2', kind: 'wan', role: 'uplink' },
     { name: 'eth0', kind: 'ethernet' },
     { name: 'eth1', kind: 'ethernet' },
+    { name: 'sfp0', kind: 'sfp', role: 'uplink' },
   ],
   'access-point': [{ name: 'wifi0', kind: 'wifi' }],
   firewall: [
-    { name: 'wan1', kind: 'wan' },
+    { name: 'wan1', kind: 'wan', role: 'uplink' },
     { name: 'eth0', kind: 'ethernet' },
     { name: 'eth1', kind: 'ethernet' },
   ],
   ups: [],
 };
+
+/**
+ * The interface list a device is born with: the catalog def's own list when it
+ * declares one (e.g. the managed-switch port-count variants), otherwise the
+ * per-kind default above.
+ */
+function defaultInterfaces(def: DeviceDef): { name: string; kind: NetInterface['kind']; role?: 'uplink' }[] {
+  return def.interfaces && def.interfaces.length > 0 ? def.interfaces : (DEFAULT_INTERFACES[def.kind] ?? []);
+}
 
 function isWired(world: World, deviceId: string, interfaceName: string): boolean {
   return world.links.some(
@@ -75,6 +86,59 @@ export function interfaceMediaProblem(
     return `a ${a.kind} port cannot be cabled to a ${b.kind} port`;
   }
   return undefined;
+}
+
+/** Reach limits per optics class, in world units (GDD §11 dB budgets, abstracted). */
+export const REACH_LIMITS: Record<ReachClass, number> = { short: 400, long: 1600, xgs: 6400 };
+const REACH_RANK: Record<ReachClass, number> = { short: 0, long: 1, xgs: 2 };
+
+/** The optics module installed in an endpoint's slot, if the port is an SFP with one. */
+function endpointModule(world: World, endpoint: Endpoint, device: Device | undefined): ModuleDef | undefined {
+  const iface = device?.interfaces.find((i) => i.name === endpoint.interfaceName);
+  if (iface === undefined || iface.kind !== 'sfp' || device === undefined) return undefined;
+  const moduleId = device.modules?.[endpoint.interfaceName];
+  if (moduleId === undefined) return undefined;
+  return world.modules[moduleId];
+}
+
+/**
+ * Is a wired link actually compatible end to end? Copper ports auto-negotiate
+ * (auto-MDIX era — no crossover friction), so plain ethernet↔ethernet/wan
+ * always passes. SFP slots need optics installed on every SFP endpoint, the
+ * two modules must share a medium, and the weaker module's reach class must
+ * cover the run's length. Phase 1 is warning-only: callers log the problem but
+ * still create the link; enforcement lands in Phase 2.
+ */
+export function linkCompatible(world: World, link: Link): { ok: boolean; reason?: string } {
+  const a = world.devices[link.a.deviceId];
+  const b = world.devices[link.b.deviceId];
+  if (a === undefined || b === undefined) return { ok: true };
+  const aIface = a.interfaces.find((i) => i.name === link.a.interfaceName);
+  const bIface = b.interfaces.find((i) => i.name === link.b.interfaceName);
+  const aSfp = aIface?.kind === 'sfp';
+  const bSfp = bIface?.kind === 'sfp';
+  if (!aSfp && !bSfp) return { ok: true };
+  const aModule = endpointModule(world, link.a, a);
+  const bModule = endpointModule(world, link.b, b);
+  if (aSfp && aModule === undefined) return { ok: false, reason: `${a.name}:${link.a.interfaceName} has an empty SFP slot — install optics` };
+  if (bSfp && bModule === undefined) return { ok: false, reason: `${b.name}:${link.b.interfaceName} has an empty SFP slot — install optics` };
+  if (aModule!.medium !== bModule!.medium) return { ok: false, reason: `media mismatch — ${aModule!.name} ends in ${aModule!.medium} but ${bModule!.name} ends in ${bModule!.medium}` };
+  const weaker = REACH_RANK[aModule!.reachClass] <= REACH_RANK[bModule!.reachClass] ? aModule! : bModule!;
+  const distance = Math.hypot(a.x - b.x, a.y - b.y);
+  const limit = REACH_LIMITS[weaker.reachClass];
+  if (distance > limit) {
+    return { ok: false, reason: `${weaker.name} covers ${limit} units (${weaker.reachClass} class) but this run is ${Math.round(distance)} — longer reach needed` };
+  }
+  return { ok: true };
+}
+
+/** Log a warning for every wired link on this device whose optics no longer fit. */
+function warnIncompatibleLinks(world: World, device: Device): void {
+  for (const link of world.links) {
+    if (link.a.deviceId !== device.id && link.b.deviceId !== device.id) continue;
+    const compat = linkCompatible(world, link);
+    if (!compat.ok) log(world, 'warn', 'board', `optics problem on ${link.a.interfaceName} ↔ ${link.b.interfaceName}: ${compat.reason}`);
+  }
 }
 
 function endpointIsFree(world: World, endpoint: Endpoint): string | undefined {
@@ -124,9 +188,10 @@ export function applyCommand(world: World, command: Command): Event[] {
         defId: def.id,
         x: command.x,
         y: command.y,
-        interfaces: (DEFAULT_INTERFACES[def.kind] ?? []).map((iface) => ({
+        interfaces: defaultInterfaces(def).map((iface) => ({
           name: iface.name,
           kind: iface.kind,
+          ...(iface.role !== undefined ? { role: iface.role } : {}),
           mac: randomMac(world),
           enabled: true,
         })),
@@ -180,6 +245,10 @@ export function applyCommand(world: World, command: Command): Event[] {
         media: command.media ?? 'copper',
       });
       log(world, 'info', 'board', `wired ${aDevice?.name}:${command.a.interfaceName} ↔ ${bDevice?.name}:${command.b.interfaceName}`);
+      // Phase 1 is warning-only: optics problems never block wiring, they just
+      // tell the player the run will not hold once enforcement lands (GDD §11).
+      const compat = linkCompatible(world, world.links[world.links.length - 1]!);
+      if (!compat.ok) log(world, 'warn', 'board', `optics warning: ${compat.reason}`);
       break;
     }
 
@@ -188,6 +257,48 @@ export function applyCommand(world: World, command: Command): Event[] {
       if (link === undefined) break;
       world.links = world.links.filter((l) => l.id !== command.linkId);
       log(world, 'info', 'board', `removed link ${link.id}`);
+      break;
+    }
+
+    case 'installModule': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      const iface = device.interfaces.find((i) => i.name === command.interfaceName);
+      if (iface === undefined || iface.kind !== 'sfp') {
+        log(world, 'warn', 'shop', `${device.name}: no SFP slot named ${command.interfaceName}`);
+        break;
+      }
+      const module = world.modules[command.moduleId];
+      if (module === undefined) {
+        log(world, 'warn', 'shop', `unknown module "${command.moduleId}"`);
+        break;
+      }
+      if (device.modules?.[command.interfaceName] !== undefined) {
+        log(world, 'warn', 'shop', `${device.name}:${command.interfaceName} already has a module — remove it first`);
+        break;
+      }
+      if (world.cash < module.price) {
+        log(world, 'warn', 'shop', `not enough cash for ${module.name} ($${module.price})`);
+        break;
+      }
+      world.cash -= module.price;
+      if (device.modules === undefined) device.modules = {};
+      device.modules[command.interfaceName] = module.id;
+      log(world, 'info', 'shop', `installed ${module.name} in ${device.name}:${command.interfaceName} ($${module.price})`);
+      warnIncompatibleLinks(world, device);
+      break;
+    }
+
+    case 'removeModule': {
+      const device = deviceById(world, command.deviceId);
+      if (device === undefined) break;
+      if (device.modules?.[command.interfaceName] === undefined) {
+        log(world, 'warn', 'shop', `${device.name}:${command.interfaceName} has no module installed`);
+        break;
+      }
+      delete device.modules[command.interfaceName];
+      log(world, 'info', 'shop', `removed the module from ${device.name}:${command.interfaceName} (no refund)`);
+      warnIncompatibleLinks(world, device);
       break;
     }
 
@@ -742,6 +853,161 @@ export function applyCommand(world: World, command: Command): Event[] {
       break;
     }
 
+    case 'startResearch': {
+      const node = world.researchNodes.find((n) => n.id === command.nodeId);
+      if (node === undefined) {
+        log(world, 'warn', 'research', `unknown research node "${command.nodeId}"`);
+        break;
+      }
+      if (world.research.completed.includes(node.id)) {
+        log(world, 'warn', 'research', `${node.name} is already researched`);
+        break;
+      }
+      if (node.requires !== undefined && !world.research.completed.includes(node.requires)) {
+        log(world, 'warn', 'research', `${node.name} needs its prerequisite researched first`);
+        break;
+      }
+      if (world.research.active !== undefined) {
+        log(world, 'warn', 'research', `the lab is busy with another project — one at a time`);
+        break;
+      }
+      const cost = researchCost(node, world.research.labPriorsGranted, world.research.labPriorsUsed);
+      if (world.insight < cost.insight) {
+        log(world, 'warn', 'research', `${node.name} needs ${cost.insight} insight — you have ${world.insight}`);
+        break;
+      }
+      if (world.cash < cost.cash) {
+        log(world, 'warn', 'research', `${node.name} needs $${cost.cash} — you have $${world.cash}`);
+        break;
+      }
+      world.insight -= cost.insight;
+      world.cash -= cost.cash;
+      world.research.active = { nodeId: node.id, remaining: node.ticks };
+      world.research.labPriorsUsed.push(node.id);
+      log(world, 'info', 'research', `research started: ${node.name} — ${node.ticks} ticks (-${cost.insight} insight, -$${cost.cash})`);
+      break;
+    }
+
+    case 'runExperiment': {
+      const template = world.experiments.find((t) => t.id === command.templateId);
+      if (template === undefined) {
+        log(world, 'warn', 'lab', `unknown experiment "${command.templateId}"`);
+        break;
+      }
+      if (!Number.isFinite(command.predicted) || !Number.isFinite(command.tolerance) || command.tolerance <= 0) {
+        log(world, 'warn', 'lab', `${template.name}: a hypothesis needs a predicted value and a positive tolerance (V2.2-3.5)`);
+        break;
+      }
+      if (!Number.isInteger(command.repetitions) || command.repetitions < 1 || command.repetitions > 12) {
+        log(world, 'warn', 'lab', `${template.name}: repetitions must be between 1 and 12`);
+        break;
+      }
+      const prior = world.lab.records.filter((r) => r.templateId === template.id);
+      const known = prior.find((r) => r.conclusive);
+      if (known !== undefined) {
+        // Duplicate hypothesis class (V2.2-3.5): pays 10% and auto-fills the
+        // conclusion from the recorded result — farming identical setups
+        // yields almost nothing.
+        const reward = Math.max(1, Math.round(template.baseInsight * 0.1));
+        world.insight += reward;
+        const record: LabRecord = {
+          id: nextId(world, 'lab'),
+          templateId: template.id,
+          classKey: template.id,
+          predicted: known.predicted,
+          tolerance: known.tolerance,
+          repetitions: command.repetitions,
+          measurement: known.measurement,
+          validity: known.validity,
+          conclusive: true,
+          rewardInsight: reward,
+          duplicate: true,
+          tick: world.tick,
+        };
+        if (known.interpretation !== undefined) record.interpretation = known.interpretation;
+        world.lab.records.push(record);
+        log(world, 'info', 'lab', `${template.name}: repeat of a known experiment — auto-filled from the notebook (+${reward} insight)`);
+        break;
+      }
+      const latest = prior.at(-1);
+      if (latest !== undefined && !latest.conclusive) {
+        // Inconclusive results may be rerun once, with more repetitions —
+        // repetitions narrow the noise band (V2.2-3.5).
+        if (world.lab.reranClasses.includes(template.id)) {
+          log(world, 'warn', 'lab', `${template.name}: the inconclusive result was already rerun once — it stands`);
+          break;
+        }
+        if (command.repetitions <= latest.repetitions) {
+          log(world, 'warn', 'lab', `${template.name}: a rerun needs more repetitions than the inconclusive attempt (${latest.repetitions})`);
+          break;
+        }
+        world.lab.reranClasses.push(template.id);
+      }
+      const validity: LabRecord['validity'] = benchValid(world, template) ? 'full' : 'reduced';
+      const band = labNoiseBand(template, command.repetitions);
+      const spread = (nextRandom(world) % 2000) / 1000 - 1;
+      const measurement = Math.round((template.trueValue + spread * band) * 100) / 100;
+      const tol = Math.round(command.tolerance * 100) / 100;
+      const conclusive = tol >= band;
+      const record: LabRecord = {
+        id: nextId(world, 'lab'),
+        templateId: template.id,
+        classKey: template.id,
+        predicted: command.predicted,
+        tolerance: tol,
+        repetitions: command.repetitions,
+        measurement,
+        validity,
+        conclusive,
+        tick: world.tick,
+      };
+      world.lab.records.push(record);
+      if (!conclusive) {
+        log(world, 'warn', 'lab', `${template.name}: inconclusive — tolerance ±${tol}${template.unit} sits inside the noise band ±${Math.round(band * 100) / 100}${template.unit}; rerun once with more repetitions (reward will be halved)`);
+      } else {
+        log(world, 'info', 'lab', `${template.name}: measured ${measurement}${template.unit} (predicted ${command.predicted} ±${tol}) — read the result to conclude${validity === 'reduced' ? ' [reduced validity — the bench lacks the right equipment]' : ''}`);
+      }
+      break;
+    }
+
+    case 'interpretExperiment': {
+      const record = world.lab.records.find((r) => r.id === command.recordId);
+      if (record === undefined) {
+        log(world, 'warn', 'lab', 'unknown notebook entry');
+        break;
+      }
+      if (record.rewardInsight !== undefined) {
+        log(world, 'warn', 'lab', 'that entry is already concluded');
+        break;
+      }
+      const template = world.experiments.find((t) => t.id === record.templateId);
+      if (template === undefined) break;
+      // Correct interpretation = the conclusion matches what the measurement
+      // actually said, whatever the prediction claimed (V2.2-3.5): a
+      // wrong-but-specific hypothesis read correctly still pays full.
+      const withinTolerance = Math.abs(record.measurement - record.predicted) <= record.tolerance;
+      const correct = (command.conclusion === 'confirmed') === withinTolerance;
+      record.interpretation = correct ? 'correct' : 'wrong';
+      const validityFactor = record.validity === 'full' ? 1 : 0.5;
+      const reward = correct ? Math.round(template.baseInsight * validityFactor) : 0;
+      record.rewardInsight = reward;
+      world.insight += reward;
+      if (correct) {
+        if (
+          record.validity === 'full' &&
+          template.grantsPrior !== undefined &&
+          !world.research.labPriorsGranted.includes(template.grantsPrior)
+        ) {
+          world.research.labPriorsGranted.push(template.grantsPrior);
+          log(world, 'info', 'research', `lab prior earned: -20% insight on the adjacent research node (from "${template.name}")`);
+        }
+        log(world, 'info', 'lab', `${template.name}: conclusion matches the reading — +${reward} insight${record.validity === 'reduced' ? ' (reduced validity ×0.5)' : ''}`);
+      } else {
+        log(world, 'warn', 'lab', `${template.name}: the conclusion does not match the measurement — a misread pays nothing`);
+      }
+      break;
+    }
+
     case 'repairDevice': {
       const device = deviceById(world, command.deviceId);
       if (device === undefined) break;
@@ -786,11 +1052,12 @@ export function applyCommand(world: World, command: Command): Event[] {
         defId: def.id,
         x: old.x,
         y: old.y,
-        interfaces: (DEFAULT_INTERFACES[def.kind] ?? []).map((iface) => {
+        interfaces: defaultInterfaces(def).map((iface) => {
           const previous = old.interfaces.find((i) => i.name === iface.name);
           return {
             name: iface.name,
             kind: iface.kind,
+            ...(iface.role !== undefined ? { role: iface.role } : {}),
             mac: randomMac(world),
             enabled: true,
             ...(previous?.ipv4 !== undefined ? { ipv4: { ...previous.ipv4 } } : {}),
@@ -801,6 +1068,9 @@ export function applyCommand(world: World, command: Command): Event[] {
         }),
         config: structuredClone(old.config),
         uptimeTicks: 0,
+        // Optics are part of the hardware being swapped: whatever sat in the
+        // dead unit's slots ships in the new one.
+        ...(old.modules !== undefined && Object.keys(old.modules).length > 0 ? { modules: { ...old.modules } } : {}),
         // New stock ships on the current channel firmware when one is known.
         firmware: world.firmwareChannels[def.id] ?? def.firmware,
       };
@@ -835,7 +1105,7 @@ export function applyCommand(world: World, command: Command): Event[] {
         } else {
           log(world, 'info', 'shop', `sponsored the neighborhood LAN party — a fun night, but you are already the talk of the town (-$${cost})`);
         }
-      } else {
+      } else if (command.action === 'free-repairs') {
         const cost = 80;
         if (world.cash < cost) {
           log(world, 'warn', 'shop', `a free-repairs weekend needs $${cost} — you have $${world.cash}`);
@@ -849,6 +1119,79 @@ export function applyCommand(world: World, command: Command): Event[] {
         } else {
           log(world, 'info', 'shop', `ran a free-repairs weekend — generous, but your standing was already spotless (-$${cost})`);
         }
+      } else {
+        // The win-back campaign: the paid counter to the rival's poaching.
+        // The pitch only lands if their box is healthy again — you are
+        // selling the service they left over, so it has to be real this
+        // time. A client the rival itself holds is a harder sell: the visit
+        // costs more, and the rival meets the offer with a deeper discount.
+        const client = command.client ?? '';
+        const dead = world.contracts.find((c) => !c.active && c.client === client);
+        const held = dead === undefined && rivalHolds(world, client);
+        if (dead === undefined && !held) {
+          log(world, 'warn', 'shop', `no lost client named "${client}" to win back`);
+          break;
+        }
+        if (contractFor(world, client) !== undefined) {
+          log(world, 'warn', 'contract', `${client} is already under contract`);
+          break;
+        }
+        const cost = held ? RIVAL_HELD_COST : 150;
+        if (world.cash < cost) {
+          log(world, 'warn', 'shop', `a win-back campaign for ${client} needs $${cost} — you have $${world.cash}`);
+          break;
+        }
+        let device: Device | undefined;
+        let baseFee: number;
+        if (dead !== undefined) {
+          device = world.devices[dead.deviceId];
+          baseFee = CONTRACT_OFFERS.find((o) => o.client === client)?.baseFeePerDay ?? dead.feePerDay;
+        } else {
+          // A poached proposal never signed, so the pin works like the offer
+          // flow: the client's first device of the kind they asked for.
+          const offer = CONTRACT_OFFERS.find((o) => o.client === client);
+          device = offer === undefined ? undefined : Object.values(world.devices).find((d) => d.kind === offer.requiresKind);
+          baseFee = offer?.baseFeePerDay ?? 0;
+          if (device === undefined) {
+            log(world, 'warn', 'shop', `${client}: needs a ${offer?.requiresKind ?? 'matching'} device on the board before they will listen`);
+            break;
+          }
+        }
+        if (device === undefined) {
+          log(world, 'warn', 'shop', `${client}: their device is no longer on the board — nothing to campaign around`);
+          break;
+        }
+        world.cash -= cost;
+        if (device.failed || device.compromised) {
+          log(world, 'alert', 'shop', `win-back campaign with ${client} fell flat — their ${device.name} is still broken (-$${cost})`);
+          if (held) log(world, 'info', 'contract', `${RIVAL_NAME} matched your visit — their rep was at ${client}'s office the next morning`);
+          deliverMail(world, {
+            from: clientAddress(client),
+            subject: 'We appreciate the offer',
+            body:
+              `Hello,\n\nThat was a kind visit, and the gesture did not go unnoticed. But the ${device.name} is still ` +
+              `giving us trouble, and ${RIVAL_NAME}'s people answer within the hour. We will stay where we are for now.\n\n` +
+              `— ${client}, office manager`,
+            kind: 'client',
+            actions: [],
+          });
+          break;
+        }
+        createContract(world, client, device, baseFee, held ? RIVAL_HELD_EXTRA : 0);
+        log(world, 'info', 'shop', `win-back campaign worked — ${client} is back on the books (-$${cost})`);
+        deliverMail(world, {
+          from: clientAddress(client),
+          subject: held ? `Leaving ${RIVAL_NAME} for your shop` : 'Giving your shop another chance',
+          body:
+            (held
+              ? `Hello,\n\nYour team came by, and it meant more than you know. ${RIVAL_NAME}'s reps have been by twice since, ` +
+                `but a call you answer is worth more than a discount you have to chase.\n\n`
+              : `Hello,\n\nYour team came by, and we appreciated it more than you know. `) +
+            `The ${device.name} has been steady since you fixed it, and that is what we are paying for.\n\n` +
+            `We have signed again — take care of us like before.\n\n— ${client}, office manager`,
+          kind: 'client',
+          actions: [],
+        });
       }
       break;
     }
@@ -868,6 +1211,10 @@ export function applyCommand(world: World, command: Command): Event[] {
       const offer = CONTRACT_OFFERS.find((o) => o.client === command.client);
       if (offer === undefined) {
         log(world, 'warn', 'contract', `no such client: "${command.client}"`);
+        break;
+      }
+      if (rivalHolds(world, command.client)) {
+        log(world, 'warn', 'contract', `${command.client} signed with ${RIVAL_NAME} — winning them back takes a campaign, not a signature`);
         break;
       }
       if (contractFor(world, command.client) !== undefined) {
@@ -907,12 +1254,58 @@ export function advanceTicks(world: World, count: number): Event[] {
     maybeSpawnContractTickets(world);
     maybeSpawnFirmwareIncidents(world);
     maybeWearFailures(world);
+    advanceResearch(world);
     payContractFees(world);
     maybeDeliverMail(world);
     maybeDeliverProposals(world);
+    maybeRivalPoachProposals(world);
     maybeCloseSeason(world);
   }
   return world.log.slice(before);
+}
+
+// ---- Research (GDD §18) ----
+
+/** True when the node is unlocked — capabilities check this to change behavior. */
+export function hasResearch(world: World, nodeId: string): boolean {
+  return world.research.completed.includes(nodeId);
+}
+
+/**
+ * What a node costs right now (V2.2-3.5): a lab prior earned by a completed,
+ * correctly-read experiment discounts Insight 20%, once per node. The UI
+ * renders this; the sim charges it.
+ */
+export function researchCost(node: ResearchNodeDef, labPriorsGranted: string[], labPriorsUsed: string[]): { insight: number; cash: number } {
+  const discounted = node.labPrior === true && labPriorsGranted.includes(node.id) && !labPriorsUsed.includes(node.id);
+  return { insight: discounted ? Math.round(node.insight * 0.8) : node.insight, cash: node.cash };
+}
+
+/** One project at a time; finishing a project unlocks its capability. */
+function advanceResearch(world: World): void {
+  const active = world.research.active;
+  if (active === undefined) return;
+  active.remaining -= 1;
+  if (active.remaining > 0) return;
+  const node = world.researchNodes.find((n) => n.id === active.nodeId);
+  delete world.research.active;
+  world.research.completed.push(active.nodeId);
+  if (node !== undefined) {
+    log(world, 'info', 'research', `${node.name} researched — ${node.capability}`);
+  }
+}
+
+// ---- Lab experiments (V2.2-3.5) ----
+
+/** Measurement noise half-band at n repetitions: repetitions narrow it. */
+export function labNoiseBand(template: ExperimentTemplate, repetitions: number): number {
+  return template.noiseBand / Math.sqrt(Math.max(1, repetitions));
+}
+
+/** Does the bench's equipment class cover the tested parameter? */
+function benchValid(world: World, template: ExperimentTemplate): boolean {
+  if (template.requiresKind === undefined) return true;
+  return Object.values(world.devices).some((d) => d.kind === template.requiresKind && !d.failed);
 }
 
 // ---- Mail (GDD §8) ----
@@ -937,11 +1330,13 @@ export function deliverMail(world: World, template: MailTemplateInput): Mail {
     read: false,
     actions: template.actions ?? [],
   };
-  // The tuned spam filter catches phishing on arrival: flagged from insight 3,
-  // and from insight 5 it also reports the letter itself (its actions never
-  // pay out). Ticket and client letters are always delivered untouched.
+  // The tuned spam filter catches phishing on arrival: flagged from insight 3
+  // (2 with the IDS effectiveness node, which trains the filter on
+  // signatures), and from insight 5 it also reports the letter itself (its
+  // actions never pay out). Ticket and client letters are always delivered
+  // untouched.
   if (mail.kind === 'phish') {
-    mail.quarantined = world.insight >= 3;
+    mail.quarantined = world.insight >= (hasResearch(world, 'sec-ids') ? 2 : 3);
     if (world.insight >= 5) {
       mail.quarantined = true;
       mail.read = true;
@@ -1047,18 +1442,73 @@ function maybeDeliverProposals(world: World): void {
     return Object.values(world.devices).some((d) => d.kind === o.requiresKind);
   });
   if (offer === undefined) return;
+  // A rival on the shop's radar makes itself known in every proposal: the
+  // client says so plainly, and the signature that follows locks in less.
+  const rivalLine = rivalUndercuts(world)
+    ? `Fair warning: a rep from ${RIVAL_NAME} came by this week quoting the same service for ${Math.round(RIVAL_MATCH_DISCOUNT * 100)}% less. We are signing with whoever gets closest to their number.\n\n`
+    : '';
   deliverMail(world, {
     from: clientAddress(offer.client),
     subject: 'Maintenance contract proposal',
     body:
       `Hello,\n\nWe heard your shop keeps networks alive. We run a ${offer.requiresKind} at our site and would pay ` +
       `$${offer.baseFeePerDay}/day for a maintenance contract — you keep it healthy, we keep paying, every day.\n\n` +
+      rivalLine +
       `If the arrangement suits you, accept below and we sign for a ${CONTRACT_TERM_TICKS / 24}-day term.\n\n` +
       `— ${offer.client}, office manager`,
     kind: 'client',
     actions: [{ label: 'Sign contract', command: `signContractOffer:${offer.client}` }],
   });
 }
+
+/**
+ * The rival's boldest move: while the shop is on SkyLink's radar, a proposal
+ * left unsigned for a full day is poached — the client signs with the rival
+ * before the player can. The proposal letter collapses to its outcome and a
+ * goodbye letter lands; the dead letter's action still matches `proposed()`,
+ * so the client never writes again.
+ */
+function maybeRivalPoachProposals(world: World): void {
+  if (world.tick % 24 !== 12) return;
+  if (!rivalUndercuts(world)) return;
+  for (const mail of world.mail) {
+    if (mail.actionTaken !== undefined) continue;
+    const action = mail.actions.find((a) => a.command.startsWith('signContractOffer:'));
+    if (action === undefined) continue;
+    if (world.tick - mail.receivedTick < 24) continue;
+    const client = action.command.slice('signContractOffer:'.length);
+    mail.actionTaken = 'poachedByRival';
+    log(world, 'alert', 'contract', `${RIVAL_NAME} got to ${client} first — they signed with the rival before you could`);
+    deliverMail(world, {
+      from: clientAddress(client),
+      subject: `We went with ${RIVAL_NAME}`,
+      body:
+        `Hello,\n\nWe did not hear back about the maintenance contract, and ${RIVAL_NAME}'s rep kept calling — ` +
+        `their number was hard to argue with. We have signed with them.\n\n` +
+        `If things change, we know where your shop is.\n\n` +
+        `— ${client}, office manager`,
+      kind: 'client',
+      actions: [],
+    });
+  }
+}
+
+/**
+ * Whether the rival currently holds a client: their proposal was poached and
+ * no contract with the shop has replaced it. The poached letter is the
+ * record — no extra world state. Held clients are harder to win back: the
+ * rival pays for the visit too.
+ */
+export function rivalHolds(world: World, client: string): boolean {
+  return world.mail.some(
+    (m) => m.actionTaken === 'poachedByRival' && m.actions.some((a) => a.command === `signContractOffer:${client}`),
+  );
+}
+
+/** A win-back visit to a client the rival holds costs this much, not the standard rate. */
+export const RIVAL_HELD_COST = 250;
+/** The rival undercuts the win-back itself: held clients return this much deeper in the hole. */
+export const RIVAL_HELD_EXTRA = 0.1;
 
 // ---- Tickets (GDD §6.2) ----
 
@@ -1175,8 +1625,12 @@ function contractFor(world: World, client: string): Contract | undefined {
 }
 
 /** Shared signing tail: fee locked at today's reputation rate, fresh term, no strikes. */
-function createContract(world: World, client: string, device: Device, baseFeePerDay: number): Contract {
-  const fee = Math.round(baseFeePerDay * rewardMultiplier(world.reputation) * payFactor(world) * contractFeeMult(world.goal));
+function createContract(world: World, client: string, device: Device, baseFeePerDay: number, extraDiscount = 0): Contract {
+  // A rival on the shop's radar bids every new signature down: the price they
+  // wave in poach letters applies to fresh terms too — and deeper for
+  // clients the rival itself holds (win-backs meet its counter-offer).
+  const undercut = rivalUndercuts(world);
+  const fee = Math.round(baseFeePerDay * rewardMultiplier(world.reputation) * payFactor(world) * contractFeeMult(world.goal) * (undercut ? 1 - RIVAL_MATCH_DISCOUNT - extraDiscount : 1));
   const contract: Contract = {
     id: nextId(world, 'contract'),
     client,
@@ -1188,7 +1642,7 @@ function createContract(world: World, client: string, device: Device, baseFeePer
     active: true,
   };
   world.contracts.push(contract);
-  log(world, 'info', 'contract', `${client} signed a maintenance contract for ${device.name} — $${fee}/day`);
+  log(world, 'info', 'contract', `${client} signed a maintenance contract for ${device.name} — $${fee}/day${undercut ? ` (undercut by ${RIVAL_NAME}, bidding ${Math.round((RIVAL_MATCH_DISCOUNT + extraDiscount) * 100)}% less)` : ''}`);
   return contract;
 }
 
@@ -1236,6 +1690,7 @@ function strikeContract(world: World, contract: Contract, why: string): void {
       actions: [],
     });
     log(world, 'alert', 'contract', `${contract.client}: churned after repeated failures — contract ended, -2 reputation`);
+    rivalTaunt(world, contract.client);
   }
 }
 
@@ -1309,6 +1764,7 @@ function decideContractExpiries(world: World): void {
         actions: [],
       });
       log(world, 'alert', 'contract', `${contract.client}: not renewing after ${contract.breaches} strike(s) — -2 reputation`);
+      rivalTaunt(world, contract.client);
     }
   }
 }
@@ -1551,6 +2007,16 @@ export function maybeRivalPoach(world: World, seasonScore: number): Mail | undef
 }
 
 /**
+ * Once a season closes at the rival's attention threshold, SkyLink knows the
+ * shop's numbers — and undercuts every new contract the shop tries to sign.
+ * The discount is the same 15% they dangle in poach letters: the rival bids
+ * one price, everywhere.
+ */
+export function rivalUndercuts(world: World): boolean {
+  return careerPrestige(world) >= RIVAL_POACH_SCORE;
+}
+
+/**
  * The day-30 endgame, per season: the season closes, its scorecard freezes
  * into prestigeHistory, the season letter lands, and the next season begins.
  * The board keeps running — seasons roll on, prestige accumulates.
@@ -1606,6 +2072,25 @@ function maybeCloseSeason(world: World): void {
   world.season += 1;
 }
 
+/**
+ * SkyLink gloats. Every client the shop loses while the rival is on its
+ * radar earns a line in the events log — word of your losses is their
+ * advertising. The pick is deterministic: the tick chooses the jab.
+ */
+const RIVAL_TAUNTS: ((client: string) => string)[] = [
+  (client) => `${RIVAL_NAME} (overheard at the coffee shop): "${client} just signed with us — fewer outages, friendlier invoice."`,
+  (client) => `${RIVAL_NAME}'s billboard on the main road now reads: "Even ${client} switched."`,
+  (client) => `${RIVAL_NAME}'s rep, door to door: "We keep hearing your name next to ${client}'s — in past tense."`,
+  (client) => `${RIVAL_NAME} circled ${client}'s address in their prospect book — in green, the color of closed deals.`,
+];
+
+/** Fires the gloat, if the rival is watching and there is something to gloat about. */
+function rivalTaunt(world: World, client: string): void {
+  if (!rivalUndercuts(world)) return;
+  const taunt = RIVAL_TAUNTS[world.tick % RIVAL_TAUNTS.length]!(client);
+  log(world, 'info', 'contract', taunt);
+}
+
 /** Mark a device dead: hardware gave out, traffic stops until repaired. */
 function failDevice(world: World, target: Device): void {
   if (target.failed) {
@@ -1654,6 +2139,16 @@ function maybeWearFailures(world: World): void {
   if (eligible.length === 0) return;
   for (const device of eligible) {
     const chance = dailyWearChance(world, device);
+    // Predictive maintenance (Observability branch): aging plant is flagged
+    // once, a day before the wear rolls can kill it — replace early or roll
+    // the dice, the player's call.
+    if (
+      hasResearch(world, 'obs-predictive') &&
+      !world.research.predictiveFlags.includes(device.id)
+    ) {
+      world.research.predictiveFlags.push(device.id);
+      log(world, 'warn', 'research', `predictive maintenance flags ${device.name} — aging hardware, consider replacing it`);
+    }
     if (chance > 0 && nextRandom(world) % 1000 < chance * 1000) {
       failDevice(world, device);
       break; // one failure per day keeps incidents readable
@@ -1689,10 +2184,20 @@ function maybeSpawnFirmwareIncidents(world: World): void {
     (device) => !device.compromised && !device.failed && world.firmwareChannels[device.defId] !== undefined && device.firmware !== world.firmwareChannels[device.defId],
   );
   if (eligible.length === 0) return;
-  if (nextRandom(world) % 4 !== 0) return;
+  if (!firmwareIncidentDue(world)) return;
   const target = eligible[nextRandom(world) % eligible.length];
   if (target !== undefined) applyOutdatedFirmwareIncident(world, target, world.firmwareChannels[target.defId] ?? '');
 }
+
+/**
+ * The daily ambient-exploit gate. Hardening program (Security branch):
+ * patched baselines make exploits land half as often — the pressure stays,
+ * the bleed slows.
+ */
+export function firmwareIncidentDue(world: World): boolean {
+  return nextRandom(world) % (hasResearch(world, 'sec-hardening') ? 8 : 4) === 0;
+}
+
 /**
  * Contract clients watch their own device and file tickets when it misbehaves.
  * Two honest signals: a compromised box (security) and a wired device whose

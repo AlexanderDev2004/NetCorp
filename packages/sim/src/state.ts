@@ -26,6 +26,7 @@ export function createWorld(seed: number, catalog: DeviceCatalog): World {
     catalog,
     devices: {},
     links: [],
+    modules: {},
     log: [],
     tickets: [],
     mail: [],
@@ -41,6 +42,10 @@ export function createWorld(seed: number, catalog: DeviceCatalog): World {
     rackTier: 0,
     nextId: 0,
     firmwareChannels: {},
+    researchNodes: [],
+    research: { completed: [], labPriorsGranted: [], labPriorsUsed: [], predictiveFlags: [] },
+    experiments: [],
+    lab: { records: [], reranClasses: [] },
   };
 }
 

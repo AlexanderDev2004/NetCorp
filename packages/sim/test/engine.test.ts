@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyCommand, advanceTicks, CONTRACT_OFFERS, createWorld, dailyWearChance, deliverMail, devicePrice, findDhcpServers, findPath, HARD_WEAR_FACTOR, openTicket, phishAlertLevel, phishPayRepLoss, PRESTIGE_DAY_TICKS, prestigeBreakdown, repairCost, RACK_TIERS, rackSlots, REPAIR_COST, TRADE_IN_CREDIT, wearFailureChance } from '../src';
+import { applyCommand, advanceTicks, CONTRACT_OFFERS, createWorld, dailyWearChance, deliverMail, devicePrice, findDhcpServers, findPath, HARD_WEAR_FACTOR, openTicket, phishAlertLevel, phishPayRepLoss, PRESTIGE_DAY_TICKS, prestigeBreakdown, RACK_TIERS, rackSlots, rivalHolds, RIVAL_POACH_SCORE, repairCost, REPAIR_COST, TRADE_IN_CREDIT, wearFailureChance } from '../src';
 import type { DeviceCatalog, Device, Mail, World } from '../src';
 
 const catalog: DeviceCatalog = {
   desktop: { id: 'desktop', kind: 'desktop', name: 'Desktop', price: 300, interfaces: [{ name: 'eth0', kind: 'ethernet' }], firmware: 'os 1.0' },
-  server: { id: 'server', kind: 'server', name: 'Server', price: 900, interfaces: [{ name: 'eth0', kind: 'ethernet' }], firmware: 'os 1.0' },
-  'switch-unmanaged': { id: 'switch-unmanaged', kind: 'switch-unmanaged', name: 'Dumb Switch', price: 15, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }], firmware: 'n/a' },
-  'router-soho': { id: 'router-soho', kind: 'router-soho', name: 'SOHO Router', price: 80, interfaces: [{ name: 'wan1', kind: 'wan' }, { name: 'eth0', kind: 'ethernet' }], firmware: 'router 7.14' },
+  server: { id: 'server', kind: 'server', name: 'Server', price: 900, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }], firmware: 'os 1.0' },
+  'switch-unmanaged': { id: 'switch-unmanaged', kind: 'switch-unmanaged', name: 'Dumb Switch', price: 15, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'eth2', kind: 'ethernet' }, { name: 'eth3', kind: 'ethernet' }], firmware: 'n/a' },
+  'router-soho': { id: 'router-soho', kind: 'router-soho', name: 'SOHO Router', price: 80, interfaces: [{ name: 'wan1', kind: 'wan' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'wifi0', kind: 'wifi' }], firmware: 'router 7.14' },
 };
 
 let world: World;
@@ -1053,6 +1053,147 @@ describe('NetCorp sim', () => {
       expect(world.mail.some((m) => m.subject.includes('SkyLink Broadband offered us a better deal'))).toBe(false);
       const report = world.mail.find((m) => m.subject.includes('Season 1 report'))!;
       expect(report.body).not.toContain('SkyLink Broadband');
+    });
+
+    it('a high career prestige undercuts every new signing by the rival discount', () => {
+      // A closed strong season puts the shop on SkyLink's radar; the record
+      // here stands in for running the whole season.
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      expect(world.contracts[0]?.feePerDay).toBe(21); // Math.round(25 * 0.85)
+      expect(world.log.some((e) => e.text.includes('undercut by SkyLink Broadband'))).toBe(true);
+    });
+
+    it('new signings pay full rate while the rival is not watching', () => {
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      expect(world.contracts[0]?.feePerDay).toBe(25); // untouched baseline
+    });
+
+    it('proposal letters name the rival bid and sign at the undercut rate', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      advanceTicks(world, 12); // the midday proposal roll
+      const proposal = world.mail.find((m) => m.actions.some((a) => a.command.startsWith('signContractOffer:')));
+      expect(proposal?.body).toContain('a rep from SkyLink Broadband came by this week');
+      applyCommand(world, { type: 'mailAction', mailId: proposal!.id, command: proposal!.actions[0]!.command });
+      expect(world.contracts[0]?.feePerDay).toBe(13); // Café Kopi Dua: Math.round(15 * 0.85)
+    });
+
+    it('the rival poaches a proposal left unsigned for a full day', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      advanceTicks(world, 12); // Café Kopi Dua's proposal arrives midday
+      const proposal = world.mail.find((m) => m.actions.some((a) => a.command === 'signContractOffer:Café Kopi Dua'))!;
+      advanceTicks(world, 24); // a full day passes without signing
+      expect(proposal.actionTaken).toBe('poachedByRival');
+      expect(world.mail.some((m) => m.subject === 'We went with SkyLink Broadband')).toBe(true);
+      expect(world.log.some((e) => e.text.includes('got to Café Kopi Dua first'))).toBe(true);
+      // Signing the ghost does nothing: the letter is spent.
+      applyCommand(world, { type: 'mailAction', mailId: proposal.id, command: 'signContractOffer:Café Kopi Dua' });
+      expect(world.contracts).toHaveLength(0);
+    });
+
+    it('proposals sit safely while the rival is not watching', () => {
+      buildSimpleLan();
+      advanceTicks(world, 12);
+      const proposal = world.mail.find((m) => m.actions.some((a) => a.command.startsWith('signContractOffer:')))!;
+      advanceTicks(world, 24);
+      expect(proposal.actionTaken).toBeUndefined();
+    });
+
+    it('a fresh proposal is not poached on the day it arrives', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      advanceTicks(world, 12);
+      const proposal = world.mail.find((m) => m.actions.some((a) => a.command.startsWith('signContractOffer:')))!;
+      expect(proposal.actionTaken).toBeUndefined();
+    });
+
+    it('a lost client earns a rival taunt in the events log while the rival watches', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      byKind('desktop').failed = true; // three daily rolls, three strikes → churn
+      advanceTicks(world, 72);
+      expect(world.log.some((e) => e.text.includes('churned after repeated failures'))).toBe(true);
+      expect(world.log.some((e) => e.text.includes('SkyLink Broadband') && e.text.includes('Klinik Sehat'))).toBe(true);
+    });
+
+    it('a lost client walks quietly while the rival is not watching', () => {
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      byKind('desktop').failed = true;
+      advanceTicks(world, 72);
+      expect(world.log.some((e) => e.text.includes('churned after repeated failures'))).toBe(true);
+      expect(world.log.every((e) => !(e.text.includes('switched') || e.text.includes('prospect book')))).toBe(true);
+    });
+
+    it('a win-back campaign brings a churned client home at the rival price', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      byKind('desktop').failed = true;
+      advanceTicks(world, 72); // three daily strikes → churn
+      expect(world.contracts[0]!.active).toBe(false);
+      byKind('desktop').failed = false; // the box is fixed before the visit
+      const before = world.cash;
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: 'Klinik Sehat' });
+      expect(before - world.cash).toBe(150);
+      expect(world.contracts).toHaveLength(2);
+      expect(world.contracts[1]!.active).toBe(true);
+      expect(world.contracts[1]!.feePerDay).toBe(21); // coming back costs the rival's rate: 25 × 0.85
+      expect(world.mail.some((m) => m.subject === 'Giving your shop another chance')).toBe(true);
+    });
+
+    it('a win-back campaign falls flat while the client\'s box is still broken', () => {
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      byKind('desktop').failed = true;
+      advanceTicks(world, 72); // churn; the box stays broken
+      const before = world.cash;
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: 'Klinik Sehat' });
+      expect(before - world.cash).toBe(150);
+      expect(world.contracts.every((c) => !c.active)).toBe(true);
+      expect(world.mail.some((m) => m.subject === 'We appreciate the offer')).toBe(true);
+    });
+
+    it('a win-back below the rival radar signs at the full rate', () => {
+      buildSimpleLan();
+      applyCommand(world, { type: 'signContract', client: 'Klinik Sehat', deviceId: byKind('desktop').id });
+      byKind('desktop').failed = true;
+      advanceTicks(world, 72);
+      byKind('desktop').failed = false;
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: 'Klinik Sehat' });
+      expect(world.contracts[1]!.feePerDay).toBe(25); // no rival, no discount
+    });
+
+    it('a rival-held client costs more to win back and signs at the deeper discount', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      advanceTicks(world, 12); // Café Kopi Dua's proposal arrives
+      advanceTicks(world, 24); // SkyLink poaches it
+      expect(rivalHolds(world, 'Café Kopi Dua')).toBe(true);
+      const before = world.cash;
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: 'Café Kopi Dua' });
+      expect(before - world.cash).toBe(250); // the rival makes the visit expensive
+      expect(world.contracts).toHaveLength(1);
+      expect(world.contracts[0]!.feePerDay).toBe(11); // 15 at 25% off: the rival met the offer
+      expect(world.mail.some((m) => m.subject === 'Leaving SkyLink Broadband for your shop')).toBe(true);
+    });
+
+    it('a rival-held client stays put while their device is broken', () => {
+      world.prestigeHistory.push({ season: 1, score: RIVAL_POACH_SCORE, breakdown: { cashPoints: 0, reputationPoints: 0, insightPoints: 0, contractPoints: 0, networkPoints: 0, servicePoints: 0, hardBonus: 0, total: RIVAL_POACH_SCORE } });
+      buildSimpleLan();
+      advanceTicks(world, 36); // proposal arrives midday, then the rival poaches
+      byKind('desktop').failed = true;
+      const before = world.cash;
+      applyCommand(world, { type: 'goodwill', action: 'win-back', client: 'Café Kopi Dua' });
+      expect(before - world.cash).toBe(250);
+      expect(world.contracts).toHaveLength(0);
+      expect(world.mail.some((m) => m.subject === 'We appreciate the offer')).toBe(true);
+      expect(world.log.some((e) => e.text.includes('matched your visit'))).toBe(true);
     });
   });
 

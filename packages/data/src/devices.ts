@@ -1,5 +1,10 @@
 import type { DeviceDef } from '@netcorp/sim';
 
+/** Ethernet port list for the managed-switch port-count variants. */
+function ethPorts(count: number): { name: string; kind: 'ethernet' }[] {
+  return Array.from({ length: count }, (_, i) => ({ name: `eth${i}`, kind: 'ethernet' as const }));
+}
+
 /**
  * The MVP "Garage" catalog (GDD §14). Prices are game dollars. Every device is
  * a workload fit, not a tier: the dumb switch is the *right* buy for two desks.
@@ -9,9 +14,12 @@ export const DEVICE_CATALOG: DeviceDef[] = [
   { id: 'server', kind: 'server', name: 'Rack Server', price: 900, reliability: 0.85, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }], firmware: 'OsWorks Server 1.0' },
   { id: 'printer', kind: 'printer', name: 'Laser Printer', price: 120, reliability: 0.75, interfaces: [{ name: 'eth0', kind: 'ethernet' }], firmware: 'printfw 3.2' },
   { id: 'switch-unmanaged', kind: 'switch-unmanaged', name: 'Dumb Switch (4p)', price: 15, reliability: 0.65, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'eth2', kind: 'ethernet' }, { name: 'eth3', kind: 'ethernet' }], firmware: 'n/a' },
-  { id: 'switch-managed', kind: 'switch-managed', name: 'Managed Switch (6p)', price: 140, reliability: 0.8, interfaces: [{ name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'eth2', kind: 'ethernet' }, { name: 'eth3', kind: 'ethernet' }, { name: 'eth4', kind: 'ethernet' }, { name: 'eth5', kind: 'ethernet' }], firmware: 'SwitchOS 2.1' },
-  { id: 'router-soho', kind: 'router-soho', name: 'SOHO Router', price: 80, reliability: 0.75, interfaces: [{ name: 'wan1', kind: 'wan' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'wifi0', kind: 'wifi' }], firmware: 'RouterOS-like 7.14' },
-  { id: 'router-edge', kind: 'router-edge', name: 'Edge Router (dual WAN)', price: 420, reliability: 0.85, interfaces: [{ name: 'wan1', kind: 'wan' }, { name: 'wan2', kind: 'wan' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }], firmware: 'RouterOS-like 7.14' },
+  { id: 'switch-managed', kind: 'switch-managed', name: 'Managed Switch (6p)', price: 140, reliability: 0.8, interfaces: [...ethPorts(6), { name: 'sfp0', kind: 'sfp', role: 'uplink' }], firmware: 'SwitchOS 2.1' },
+  { id: 'switch-managed-8p', kind: 'switch-managed', name: 'Managed Switch (8p)', price: 200, reliability: 0.8, interfaces: [...ethPorts(8), { name: 'sfp0', kind: 'sfp', role: 'uplink' }], firmware: 'SwitchOS 2.1' },
+  { id: 'switch-managed-16p', kind: 'switch-managed', name: 'Managed Switch (16p)', price: 340, reliability: 0.8, interfaces: [...ethPorts(16), { name: 'sfp0', kind: 'sfp', role: 'uplink' }], firmware: 'SwitchOS 2.1' },
+  { id: 'switch-managed-24p', kind: 'switch-managed', name: 'Managed Switch (24p)', price: 520, reliability: 0.85, interfaces: [...ethPorts(24), { name: 'sfp0', kind: 'sfp', role: 'uplink' }], firmware: 'SwitchOS 2.1' },
+  { id: 'router-soho', kind: 'router-soho', name: 'SOHO Router', price: 80, reliability: 0.75, interfaces: [{ name: 'wan1', kind: 'wan', role: 'uplink' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'wifi0', kind: 'wifi' }], firmware: 'RouterOS-like 7.14' },
+  { id: 'router-edge', kind: 'router-edge', name: 'Edge Router (dual WAN)', price: 420, reliability: 0.85, interfaces: [{ name: 'wan1', kind: 'wan', role: 'uplink' }, { name: 'wan2', kind: 'wan', role: 'uplink' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }, { name: 'sfp0', kind: 'sfp', role: 'uplink' }], firmware: 'RouterOS-like 7.14' },
   { id: 'access-point', kind: 'access-point', name: 'Wi-Fi Access Point', price: 90, reliability: 0.7, interfaces: [{ name: 'wifi0', kind: 'wifi' }], firmware: 'AirOS 4.0' },
   { id: 'firewall', kind: 'firewall', name: 'Firewall Appliance', price: 350, reliability: 0.85, interfaces: [{ name: 'wan1', kind: 'wan' }, { name: 'eth0', kind: 'ethernet' }, { name: 'eth1', kind: 'ethernet' }], firmware: 'pfWall 2.7' },
   { id: 'ups', kind: 'ups', name: 'UPS 600VA', price: 70, reliability: 0.9, interfaces: [], firmware: 'n/a' },

@@ -87,7 +87,7 @@ export const BOARD_PROTOTYPE_TOPOLOGY: ScenarioTopology = {
     {
       defId: 'server',
       name: 'Server-A',
-      x: 620,
+      x: 700,
       y: 330,
       interfaces: [{ interfaceName: 'eth0', address: '10.20.0.100', prefix: 24, gateway: '10.20.0.1' }],
     },
