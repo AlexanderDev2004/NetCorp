@@ -32,3 +32,18 @@ npm install
 npm test        # simulation tests
 npm run dev     # client dev server
 ```
+
+## Board Prototype v0.1
+
+The client boots into the sample topology **PC-A → Switch-A → Router-A → Server-A**
+(data: `packages/data/src/scenarios.ts` → `BOARD_PROTOTYPE_TOPOLOGY`). Router-A and
+Server-A are pre-configured; PC-A boots unconfigured. The loop:
+
+1. Click **PC-A**, give it an IPv4 (`192.168.10.10/24`, gateway `192.168.10.1`).
+2. Ping the server: `10.20.0.100` from the inspector.
+3. Break it on purpose — `shut` an interface, mistype a mask, unwire a link.
+4. Watch the diagnostics explain exactly where the path broke and why, then fix it.
+
+Simulation rules (pure functions in `packages/sim`): strict IPv4/prefix validation,
+interface UP/DOWN gates every link, Wi-Fi only cables to Wi-Fi, cross-subnet traffic
+requires a gateway with an L2 path on both sides and a route toward the destination.
