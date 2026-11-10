@@ -3,273 +3,380 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NetCorp — The Garage</title>
+    <title>NetCorp — Network Operations</title>
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <style>
-      /* Design tokens borrowed from Quorum (playquorum.dev). */
+      /* ===== Design tokens — Modern Dark NOC ===== */
       :root {
-        --signal: oklch(0.8 0.12 225);
-        --danger: #e5484d;
-        --warn: #f0b429;
-        --ok: #6fcf8f;
-        --ink: #eaebec;
-        --muted: #8b9099;
-        --panel: #18191c;
-        --panel-shadow:
-          inset 0 1px 0 oklch(1 0 0 / 0.06),
-          0 0 0 1px oklch(1 0 0 / 0.07),
-          0 24px 48px -16px oklch(0 0 0 / 0.8);
-        --line: oklch(1 0 0 / 0.07);
+        --bg: #0b0d10;
+        --panel: #14171c;
+        --panel-2: #1b2027;
+        --line: #2a3038;
+        --accent: #35bdeb;
+        --accent-dim: oklch(1 0 0 / 0.09);
+        --ok: #36c98f;
+        --warn: #f2b84b;
+        --danger: #ef6262;
+        --ink: #e7eaf0;
+        --muted: #929aa7;
+        --faint: oklch(1 0 0 / 0.4);
+        --shadow: 0 1px 0 oklch(1 0 0 / 0.04) inset, 0 12px 32px -12px oklch(0 0 0 / 0.7);
+        --radius: 10px;
+        --radius-sm: 7px;
         color-scheme: dark;
       }
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
       body {
         margin: 0;
-        height: 100vh;
         overflow: hidden;
-        position: relative;
-        background: #0c0c0d;
+        background: var(--bg);
         color: var(--ink);
         font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
         font-size: 13px;
         -webkit-font-smoothing: antialiased;
+        display: flex;
+        flex-direction: column;
       }
-      #board {
-        position: absolute;
-        inset: 0;
-        display: block;
-        width: 100%;
-        height: 100%;
-        cursor: crosshair;
-      }
-      /* Decorative frame with corner brackets and ruler ticks, as in the hero art. */
-      .frame {
-        position: absolute;
-        inset: 16px;
-        border: 1px solid oklch(1 0 0 / 0.05);
-        pointer-events: none;
-      }
-      .frame .corner {
-        position: absolute;
-        width: 14px;
-        height: 14px;
-        margin: -1px;
-        border: 0 solid oklch(1 0 0 / 0.3);
-      }
-      .frame .tl { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; }
-      .frame .tr { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; }
-      .frame .bl { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; }
-      .frame .br { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; }
-      .frame .ruler {
-        position: absolute;
-        top: 0;
-        left: 80px;
-        right: 80px;
-        height: 6px;
-        --tick: oklch(1 0 0 / 0.1);
-        background:
-          repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 80px) top / 100% 6px no-repeat,
-          repeating-linear-gradient(to right, var(--tick) 0 1px, transparent 1px 10px) top / 100% 3px no-repeat;
-      }
+      .mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+      .hidden { display: none !important; }
 
-      .panel {
-        background: var(--panel);
-        border-radius: 14px;
-        box-shadow: var(--panel-shadow);
-      }
       button {
         font-family: 'Geist Mono', ui-monospace, monospace;
-        font-size: 12.5px;
+        font-size: 12px;
         font-weight: 500;
         letter-spacing: -0.01em;
-        border: 0;
-        border-radius: 9px;
-        padding: 7px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        padding: 6px 10px;
         cursor: pointer;
-        background: oklch(1 0 0 / 0.05);
+        background: var(--panel-2);
         color: var(--ink);
-        box-shadow: 0 0 0 1px oklch(1 0 0 / 0.09);
+        transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
       }
-      button:hover { background: oklch(1 0 0 / 0.09); }
+      button:hover { background: oklch(1 0 0 / 0.06); border-color: oklch(1 0 0 / 0.18); }
+      button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
       button.active {
-        color: var(--signal);
-        box-shadow: 0 0 0 1px var(--signal);
-        background: oklch(0.8 0.12 225 / 0.09);
+        color: var(--accent);
+        border-color: var(--accent);
+        background: oklch(0.75 0.12 225 / 0.1);
       }
-      button.primary {
-        background: linear-gradient(#fbfbfb, #dfe0e2);
-        color: #1d1e21;
-        box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.6), 0 1px 2px oklch(0 0 0 / 0.3);
-      }
-      button.primary:hover { background: linear-gradient(#ffffff, #e8e9eb); }
-      button.danger {
-        color: var(--danger);
-        box-shadow: 0 0 0 1px oklch(0.63 0.2 23 / 0.5);
-      }
+      button.danger { color: var(--danger); }
+      button.danger:hover { border-color: var(--danger); }
       button:disabled { opacity: 0.4; cursor: not-allowed; }
       select, input {
         font-family: 'Geist Mono', ui-monospace, monospace;
-        font-size: 12.5px;
-        background: oklch(1 0 0 / 0.05);
+        font-size: 12px;
+        background: var(--bg);
         color: var(--ink);
-        border: 0;
-        border-radius: 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
         padding: 6px 8px;
-        box-shadow: 0 0 0 1px oklch(1 0 0 / 0.09);
         outline: none;
       }
-      input:focus { box-shadow: 0 0 0 1px var(--signal); }
-      input.wide { width: 150px; }
+      input:focus, select:focus { border-color: var(--accent); }
       label { color: var(--muted); }
 
-      /* HUD — top left card, one figure per row, as in Quorum. */
-      #hud {
-        position: absolute;
-        top: 28px;
-        left: 28px;
-        width: 240px;
-        padding: 12px 14px;
-        pointer-events: auto;
+      /* ===== App shell: bar / (sidebar | workspace+console) ===== */
+      #topbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        height: 44px;
+        padding: 0 12px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+        flex-shrink: 0;
+        z-index: 30;
       }
-      #hud .head {
+      #topbar .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-weight: 600;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding-right: 10px;
+        border-right: 1px solid var(--line);
+      }
+      #topbar .brand .mark {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: linear-gradient(135deg, var(--accent), oklch(0.55 0.15 260));
+        box-shadow: 0 0 0 1px oklch(1 0 0 / 0.15) inset;
+      }
+      #topbar .brand .mark::after {
+        content: '';
+        display: block;
+        width: 6px;
+        height: 6px;
+        margin: 6px auto;
+        border-radius: 50%;
+        background: #0b0d10;
+      }
+      #topbar .stat {
         display: flex;
         align-items: baseline;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: var(--radius-sm);
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        font-size: 11.5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      #topbar .stat .value {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-weight: 600;
+        font-size: 12.5px;
+        color: var(--ink);
+      }
+      #topbar .stat.cash .value { color: var(--accent); }
+      #topbar .stat.cash .value.bad { color: var(--danger); }
+      #topbar .stat.rep .value.bad { color: var(--danger); }
+      #topbar .stat .value.bad { color: var(--danger); }
+      #topbar .spacer { flex: 1; }
+      #topbar .sim-state {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      #topbar .sim-state .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--ok);
+        box-shadow: 0 0 6px oklch(0.75 0.15 155 / 0.6);
+        animation: simpulse 2s ease-in-out infinite;
+      }
+      #topbar .sim-state.paused .dot { background: var(--warn); box-shadow: none; animation: none; }
+      @keyframes simpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+      #topbar button.active { color: var(--warn); border-color: var(--warn); }
+      #topbar button.active:hover { border-color: var(--warn); }
+      #topbar .iconbtn {
+        position: relative;
+        width: 34px;
+        height: 30px;
+        padding: 0;
+        font-size: 14px;
+        display: grid;
+        place-items: center;
+      }
+      #topbar .iconbtn.has-action { color: var(--danger); border-color: var(--danger); animation: pulse 1.6s ease-in-out infinite; }
+      @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 oklch(0.68 0.19 23 / 0.4); } 50% { box-shadow: 0 0 0 4px oklch(0.68 0.19 23 / 0.12); } }
+      #topbar .badge {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        background: var(--danger);
+        color: #0b0d10;
+        border-radius: 9px;
+        padding: 1px 5px;
+        font-size: 10px;
+        font-weight: 600;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+      }
+      #topbar .badge:empty { display: none; }
+
+      #main { display: flex; flex: 1; min-height: 0; }
+
+      /* ===== Left sidebar: tools + catalog ===== */
+      #sidebar {
+        width: 250px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-right: 1px solid var(--line);
+        min-height: 0;
+        transition: width 0.15s ease, margin 0.15s ease;
+      }
+      body.rail-collapsed #sidebar { width: 0; overflow: hidden; border-right: none; }
+      #sidebar .side-scroll { overflow-y: auto; flex: 1; min-height: 0; padding: 10px; }
+      #sidebar .section-title {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 12px 2px 8px;
+      }
+      #sidebar .section-title:first-child { margin-top: 2px; }
+      #tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+      #tools button {
+        display: flex;
+        align-items: center;
         justify-content: space-between;
+        gap: 4px;
+      }
+      #tools button .key {
+        font-size: 9.5px;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 0 4px;
+        line-height: 1.5;
+      }
+      #tools button.active .key { color: var(--accent); border-color: var(--accent); }
+      #catalog-search {
+        width: 100%;
         margin-bottom: 8px;
       }
-      #hud .brand {
-        font-family: 'Geist Mono', ui-monospace, monospace;
-        font-weight: 500;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        font-size: 12px;
+      #catalog { display: flex; flex-direction: column; gap: 6px; }
+      .catalog-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        text-align: left;
+        padding: 8px 10px;
+        border-radius: var(--radius);
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        cursor: pointer;
+        width: 100%;
       }
-      #hud .brand::after { content: ' ·'; color: var(--signal); }
-      #hud .calendar {
+      .catalog-item:hover { border-color: oklch(1 0 0 / 0.2); }
+      .catalog-item.active { border-color: var(--accent); background: oklch(0.75 0.12 225 / 0.08); }
+      .catalog-item .icon { font-size: 15px; width: 22px; text-align: center; flex-shrink: 0; }
+      .catalog-item .info { min-width: 0; flex: 1; }
+      .catalog-item .name { display: block; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .catalog-item .desc { display: block; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+      .catalog-item .price {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11px;
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .catalog-item.active .price { color: var(--accent); }
+      #catalog .empty { color: var(--muted); font-size: 11.5px; padding: 8px 2px; }
+
+      /* ===== Center workspace ===== */
+      #workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+      #board { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+      #hint {
+        position: absolute;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
         font-family: 'Geist Mono', ui-monospace, monospace;
         font-size: 11.5px;
         color: var(--muted);
-      }
-      #hud .row {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        padding: 3px 0;
-        font-size: 12.5px;
-      }
-      #hud .row .name { color: var(--muted); }
-      #hud .row .value {
-        font-family: 'Geist Mono', ui-monospace, monospace;
-        font-weight: 500;
-      }
-      #hud .row .value.signal { color: var(--signal); }
-      #hud .row .value.bad { color: var(--danger); }
-      #hud .row .note { font-size: 11px; color: var(--muted); margin-left: 8px; }
-
-      /* Toolbar — top right strip. */
-      #toolbar {
-        position: absolute;
-        top: 28px;
-        right: 28px;
-        display: flex;
-        gap: 6px;
-        padding: 7px;
-      }
-
-      /* Build dock — bottom center row of catalog buttons. */
-      #dock {
-        position: absolute;
-        bottom: 28px;
-        left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: center;
-        gap: 6px;
-        padding: 7px;
-        width: 860px;
-        max-width: calc(100vw - 56px);
-      }
-      #dock button {
-        display: flex;
-        flex-direction: column;
-        gap: 1px;
-        align-items: flex-start;
-        padding: 6px 10px;
+        background: oklch(0.1 0 0 / 0.72);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 14px;
+        pointer-events: none;
+        z-index: 10;
+        transition: opacity 0.15s ease;
+        max-width: 70%;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      #dock button .price {
-        font-size: 10.5px;
-        color: var(--muted);
-      }
-      #dock button.active .price { color: var(--signal); }
+      body.mail-open #hint { opacity: 0; }
+      body.shop-open #hint { opacity: 0; }
 
-      /* Round Inbox-style button — bottom right. */
-      #inbox-btn {
+      /* ===== Season goal chip (theme modifier on the board) ===== */
+      #season-goal {
         position: absolute;
-        bottom: 156px;
-        right: 28px;
-        width: 52px;
-        height: 52px;
-        border-radius: 50%;
-        font-size: 15px;
-        padding: 0;
-      }
-      #inbox-btn.has-action {
-        color: var(--danger);
-        box-shadow: 0 0 0 1px var(--danger);
-        animation: pulse 1.6s ease-in-out infinite;
-      }
-      @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 0 1px var(--danger); }
-        50% { box-shadow: 0 0 0 5px oklch(0.63 0.2 23 / 0.25); }
-      }
-      #inbox-btn .badge {
-        position: absolute;
-        top: -4px;
-        right: -4px;
-        background: var(--danger);
-        color: #0c0c0d;
-        border-radius: 9px;
-        padding: 1px 6px;
+        top: 10px;
+        left: 10px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
         font-size: 11px;
-        font-weight: 600;
+        color: var(--accent);
+        background: oklch(0.1 0 0 / 0.72);
+        border: 1px solid oklch(0.75 0.15 155 / 0.4);
+        border-radius: 999px;
+        padding: 4px 12px;
+        pointer-events: none;
+        z-index: 5;
       }
-      #inbox-btn .badge:empty { display: none; }
-      /* While the mail panel is open, slide the button left of it. */
-      body.mail-open #inbox-btn { right: 472px; }
+      #season-goal.hidden { display: none; }
 
-      /* Inspector — floating panel on the right. */
+      /* ===== Right inspector ===== */
       #inspector-panel {
-        position: absolute;
-        top: 92px;
-        right: 28px;
-        width: 360px;
-        max-height: calc(100vh - 320px);
-        display: none;
+        width: 330px;
+        flex-shrink: 0;
+        display: flex;
         flex-direction: column;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        min-height: 0;
+        transition: width 0.15s ease;
       }
-      #inspector-panel.open { display: flex; }
+      body.inspector-collapsed #inspector-panel { width: 0; overflow: hidden; border-left: none; }
       #inspector-panel .head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 12px 14px 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
         font-weight: 600;
+        flex-shrink: 0;
       }
-      #inspector-panel .head .close {
-        padding: 2px 8px;
+      #inspector-panel .head .title { font-size: 13px; }
+      #inspector-panel .head .close { padding: 2px 9px; font-size: 12px; }
+      #inspector { overflow-y: auto; flex: 1; min-height: 0; padding: 12px 14px; }
+      #inspector .empty-state {
+        color: var(--muted);
         font-size: 12px;
+        line-height: 1.7;
+        padding: 18px 6px;
+        text-align: center;
       }
-      #inspector {
-        overflow-y: auto;
-        padding: 0 14px 14px;
+      #inspector .empty-state .glyph { font-size: 26px; margin-bottom: 8px; opacity: 0.6; }
+      #inspector .device-head { margin-bottom: 4px; }
+      #inspector .device-head .dname { font-size: 15px; font-weight: 600; }
+      #inspector .device-head .dmodel { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11px; color: var(--muted); margin-top: 2px; }
+      #inspector .device-head .dstatus { margin-top: 8px; }
+      #inspector .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        border-radius: 6px;
+        padding: 2px 8px;
       }
+      #inspector .status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      #inspector .status.up { color: var(--ok); border: 1px solid oklch(0.75 0.15 155 / 0.45); }
+      #inspector .status.down { color: var(--danger); border: 1px solid oklch(0.68 0.19 23 / 0.45); }
+      /* Collapsible sections */
+      #inspector details { margin-bottom: 10px; }
+      #inspector details > summary {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        padding: 7px 4px;
+        border-bottom: 1px solid var(--line);
+        user-select: none;
+      }
+      #inspector details > summary::-webkit-details-marker { display: none; }
+      #inspector details > summary::before { content: '▸'; transition: transform 0.12s ease; font-size: 9px; }
+      #inspector details[open] > summary::before { transform: rotate(90deg); }
+      #inspector details > summary:hover { color: var(--ink); }
+      #inspector details > .section-body { padding: 10px 2px 2px; }
       #inspector .row {
         display: flex;
         align-items: center;
@@ -278,97 +385,211 @@
         flex-wrap: wrap;
       }
       #inspector .iface {
-        border-radius: 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
         padding: 9px;
         margin-bottom: 8px;
-        box-shadow: inset 0 0 0 1px var(--line);
+        background: var(--panel-2);
       }
       #inspector .iface .name {
         font-family: 'Geist Mono', ui-monospace, monospace;
-        color: var(--signal);
+        color: var(--ink);
         font-size: 12px;
         margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
       }
+      #inspector .iface .name .ifname { color: var(--accent); }
+      #inspector .iface .name .ifmeta { color: var(--muted); font-size: 10.5px; }
+      #inspector button.iface-toggle {
+        margin-left: auto;
+        font-size: 10.5px;
+        padding: 2px 8px;
+      }
+      #inspector .source-note { font-size: 11px; }
       #inspector .muted { color: var(--muted); }
-      #inspector .section {
-        font-weight: 600;
-        margin: 14px 0 8px;
-      }
       #inspector .rule {
         display: flex;
         align-items: center;
-        gap: 6px;
-        margin-bottom: 4px;
-        font-size: 12px;
-      }
-      #inspector .action-allow { color: var(--ok); }
-      #inspector .action-deny { color: var(--danger); }
-      #inspector .muted, .muted { color: var(--muted); }
-      #inspector .source-note { font-size: 11px; }
-
-      /* Mail panel — opens over the board from the round Inbox button. */
-      #mail-panel {
-        position: absolute;
-        bottom: 156px;
-        right: 28px;
-        width: 420px;
-        max-height: calc(100vh - 290px);
-        display: none;
-        flex-direction: column;
-      }
-      #mail-panel.open { display: flex; }
-      #mail-panel .head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 12px 8px;
-      }
-      #mail-panel .tabs { display: flex; gap: 6px; }
-      #mail-panel .tabs button.active {
-        color: var(--signal);
-        box-shadow: 0 0 0 1px var(--signal);
-      }
-      .mail-view {
-        overflow-y: auto;
-        padding: 0 14px 14px;
-        min-height: 0;
-      }
-      .mail-row {
-        border-radius: 10px;
-        padding: 9px 10px;
+        gap: 8px;
+        font-size: 11.5px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
         margin-bottom: 6px;
-        cursor: pointer;
-        box-shadow: inset 0 0 0 1px var(--line);
+        background: var(--panel-2);
       }
-      .mail-row:hover { background: oklch(1 0 0 / 0.04); }
-      .mail-row .from {
+      #inspector .rule .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #inspector .action-allow { color: var(--ok); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 10.5px; text-transform: uppercase; }
+      #inspector .action-deny { color: var(--danger); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 10.5px; text-transform: uppercase; }
+      #inspector input.wide { width: 150px; }
+      #inspector .diag-result {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        line-height: 1.6;
+        padding: 8px 10px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-bottom: 8px;
+      }
+      #inspector .diag-result.ok { color: var(--ok); border-color: oklch(0.75 0.15 155 / 0.45); }
+      #inspector .diag-result.fail { color: var(--danger); border-color: oklch(0.68 0.19 23 / 0.45); }
+
+      /* ===== Bottom operations console ===== */
+      #console {
+        height: 170px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border-top: 1px solid var(--line);
+        transition: height 0.15s ease;
+      }
+      body.console-collapsed #console { height: 34px; }
+      body.console-collapsed #console .console-body { display: none; }
+      #console .console-head {
         display: flex;
         align-items: center;
-        gap: 6px;
-        font-size: 12px;
-      }
-      .mail-row .dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--signal);
+        gap: 4px;
+        padding: 3px 10px;
+        border-bottom: 1px solid var(--line);
         flex-shrink: 0;
+        height: 34px;
       }
-      .mail-row.read .dot { background: transparent; box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.2); }
-      .mail-row .subject { font-weight: 600; font-size: 12.5px; margin-top: 2px; }
-      .mail-row.read .subject { font-weight: 400; color: var(--muted); }
-      .mail-row .snippet {
+      #console .console-head .ctitle {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-right: 8px;
+      }
+      #console .ctab {
+        border: 0;
+        background: transparent;
         color: var(--muted);
         font-size: 11.5px;
-        margin-top: 2px;
+        padding: 4px 10px;
+        border-radius: var(--radius-sm);
+      }
+      #console .ctab:hover { color: var(--ink); background: var(--accent-dim); }
+      #console .ctab.active { color: var(--accent); background: oklch(0.75 0.12 225 / 0.1); }
+      #console .console-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; }
+      #console .log-line {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        line-height: 1.65;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
+      #console .log-line .meta { color: var(--faint); }
+      #console .log-line.info { color: var(--muted); }
+      #console .log-line.warn { color: var(--warn); }
+      #console .log-line.alert { color: var(--danger); }
+      #console .log-line.debug { color: var(--faint); }
+      #console .sev {
+        display: inline-block;
+        width: 8px;
+        text-align: center;
+        margin-right: 4px;
+      }
+      #console .console-empty { color: var(--faint); font-size: 11.5px; padding: 8px 2px; }
+      /* Diagnostics tab: last ping result + path summary */
+      #console #diag-view { font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.7; }
+      #console #diag-view .di { color: var(--muted); }
+      #console #diag-view .di b { color: var(--ink); font-weight: 600; }
+      #console #diag-view .ok { color: var(--ok); }
+      #console #diag-view .fail { color: var(--danger); }
+
+      /* ===== Mail drawer (slides over workspace) ===== */
+      #mail-panel {
+        position: fixed;
+        top: 44px;
+        bottom: 0;
+        right: 0;
+        width: 444px;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        box-shadow: -24px 0 48px -24px oklch(0 0 0 / 0.8);
+        transform: translateX(105%);
+        transition: transform 0.18s ease;
+        z-index: 40;
+        display: flex;
+        flex-direction: column;
+      }
+      #mail-panel.open { transform: translateX(0); }
+      #mail-panel .head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        flex-shrink: 0;
+      }
+      #mail-panel .tabs { display: flex; gap: 6px; flex: 1; }
+      #mail-panel .badge {
+        background: var(--danger);
+        color: #0b0d10;
+        border-radius: 9px;
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 600;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+      }
+      #mail-panel .badge:empty { display: none; }
+      /* The discard-folder count: quieter than the unread badge. */
+      #mail-panel .badge.discard { background: oklch(0.55 0.02 260 / 0.9); color: var(--muted); }
+      #mail-panel .head .close { padding: 2px 9px; }
+      #mail-view, #tickets { overflow-y: auto; flex: 1; min-height: 0; padding: 10px 14px; }
+      .mail-row {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 9px 10px;
+        border-radius: var(--radius);
+        margin-bottom: 7px;
+        cursor: pointer;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+      }
+      .mail-row:hover { border-color: oklch(1 0 0 / 0.2); }
+      .mail-row.read { opacity: 0.62; }
+      .mail-row .from { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink); min-width: 0; }
+      .mail-row .from .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+      .mail-row.read .from .dot { background: var(--line); }
+      /* Experience flags suspected phishing straight in the list. */
+      .mail-row.phish-flagged,
+      .mail-row.phish-flagged:hover {
+        border-color: oklch(0.63 0.2 23 / 0.6);
+        background: oklch(0.63 0.2 23 / 0.08);
+      }
+      .mail-row.phish-flagged .from .dot { background: var(--danger); }
+      .mail-row .subject { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .mail-row .snippet { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* Inbox / Discarded folder switch at the top of the mail list. */
+      .folder-switch { display: flex; gap: 6px; margin-bottom: 10px; }
+      .folder-switch button {
+        padding: 3px 12px;
+        font-size: 11.5px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .folder-switch button.active { color: var(--ink); border-color: var(--accent); background: oklch(0.75 0.12 200 / 0.12); }
+      button.mail-discard { margin-top: 4px; }
       .mail-kind {
         margin-left: auto;
         font-family: 'Geist Mono', ui-monospace, monospace;
-        font-size: 10px;
+        font-size: 9.5px;
         letter-spacing: 0.05em;
         text-transform: uppercase;
         color: var(--muted);
@@ -376,34 +597,31 @@
       }
       .mail-read { min-height: 0; }
       .mail-read .back { padding: 3px 8px; font-size: 11.5px; margin-bottom: 8px; }
-      .mail-read .from { color: var(--signal); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11px; }
+      .mail-read .from { color: var(--accent); font-family: 'Geist Mono', ui-monospace, monospace; font-size: 11px; }
       .mail-read .subject { font-weight: 600; font-size: 14px; margin: 6px 0 8px; }
       .mail-read .body { color: var(--ink); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
-      .mail-read .body .link { color: var(--signal); text-decoration: underline; }
+      .mail-read .body .link { color: var(--accent); text-decoration: underline; }
       .mail-read .actions { display: flex; gap: 8px; margin-top: 14px; }
       .mail-read .outcome {
         margin-top: 10px;
         padding: 8px 10px;
-        border-radius: 8px;
+        border-radius: var(--radius-sm);
         font-size: 12px;
         color: var(--warn);
-        box-shadow: inset 0 0 0 1px oklch(0.78 0.14 85 / 0.4);
+        border: 1px solid oklch(0.78 0.14 85 / 0.4);
       }
-      .mail-read .outcome.bad { color: var(--danger); box-shadow: inset 0 0 0 1px oklch(0.63 0.2 23 / 0.4); }
-      .mail-read .outcome.good { color: var(--ok); box-shadow: inset 0 0 0 1px oklch(0.8 0.14 145 / 0.4); }
-      #tickets {
-        overflow-y: auto;
-        padding: 0 14px 14px;
-      }
+      .mail-read .outcome.bad { color: var(--danger); border-color: oklch(0.63 0.2 23 / 0.4); }
+      .mail-read .outcome.good { color: var(--ok); border-color: oklch(0.8 0.14 145 / 0.4); }
       .ticket {
-        border-radius: 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
         padding: 10px;
         margin-bottom: 10px;
-        box-shadow: inset 0 0 0 1px var(--line);
+        background: var(--panel-2);
       }
-      .ticket.breached { box-shadow: inset 0 0 0 1px var(--danger); }
+      .ticket.breached { border-color: var(--danger); }
       .ticket .client {
-        color: var(--signal);
+        color: var(--accent);
         font-family: 'Geist Mono', ui-monospace, monospace;
         font-size: 10.5px;
         letter-spacing: 0.06em;
@@ -411,7 +629,7 @@
       }
       .ticket .title { font-weight: 600; margin: 4px 0; }
       .ticket .symptom { color: var(--muted); font-size: 12px; line-height: 1.5; }
-      .ticket .meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; }
+      .ticket .meta { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; flex-wrap: wrap; }
       .ticket .sla-ok { color: var(--ok); }
       .ticket .sla-warn { color: var(--warn); }
       .ticket .sla-breach { color: var(--danger); }
@@ -419,30 +637,180 @@
       .ticket .reward { color: var(--ok); }
       .ticket .penalty { color: var(--danger); }
 
-      /* Event log — slim card, bottom left. */
-      #log-panel {
-        position: absolute;
-        bottom: 148px;
-        left: 28px;
-        width: 340px;
-        max-height: 150px;
-        overflow: hidden;
-        padding: 8px 12px;
-        font-size: 11.5px;
-        line-height: 1.5;
-        opacity: 0.92;
+      /* ===== Shop drawer (slides over workspace, like mail) ===== */
+      #shop-panel {
+        position: fixed;
+        top: 44px;
+        bottom: 0;
+        right: 0;
+        width: 480px;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        box-shadow: -24px 0 48px -24px oklch(0 0 0 / 0.8);
+        transform: translateX(105%);
+        transition: transform 0.18s ease;
+        z-index: 41;
+        display: flex;
+        flex-direction: column;
       }
-      #log-panel .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      #log-panel .warn { color: var(--warn); }
-      #log-panel .alert { color: var(--danger); }
-      #log-panel .info { color: var(--muted); }
-      #log-panel .debug { color: oklch(1 0 0 / 0.35); }
-      #log-panel .meta { color: oklch(1 0 0 / 0.35); }
+      #shop-panel.open { transform: translateX(0); }
+      #shop-panel .head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--line);
+        flex-shrink: 0;
+      }
+      #shop-panel .head .title { font-weight: 600; font-size: 13px; flex: 1; }
+      #shop-panel .shop-cash { font-size: 11.5px; color: var(--muted); }
+      #shop-panel .shop-cash b { color: var(--accent); font-weight: 600; margin-left: 4px; }
+      #shop-view { overflow-y: auto; flex: 1; min-height: 0; padding: 12px 14px; }
+      #shop-view .group-title {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 14px 2px 8px;
+      }
+      #shop-view .group-title:first-child { margin-top: 0; }
+      /* ===== Prestige scorecard (day-30 endgame overlay) ===== */
+      #prestige-overlay {
+        position: fixed;
+        inset: 0;
+        background: oklch(0 0 0 / 0.55);
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 60;
+      }
+      #prestige-overlay.hidden { display: none; }
+      #prestige-overlay .prestige-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 28px 34px;
+        width: 380px;
+        max-width: calc(100vw - 48px);
+        box-shadow: 0 24px 64px -16px oklch(0 0 0 / 0.7);
+        text-align: center;
+      }
+      #prestige-overlay .p-season {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.2em;
+        color: var(--accent);
+      }
+      #prestige-overlay .p-score {
+        font-size: 56px;
+        font-weight: 700;
+        line-height: 1.1;
+        margin: 10px 0 2px;
+        color: var(--ink);
+      }
+      #prestige-overlay .p-rank { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 16px; }
+      #prestige-overlay .p-career {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-bottom: 14px;
+      }
+      #prestige-overlay .p-career b { color: var(--accent); font-weight: 600; }
+      #prestige-overlay .p-breakdown {
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        margin-bottom: 16px;
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 11.5px;
+      }
+      #prestige-overlay .p-breakdown .row {
+        display: flex;
+        justify-content: space-between;
+        padding: 3px 2px;
+        color: var(--muted);
+      }
+      #prestige-overlay .p-breakdown .row b { color: var(--ink); font-weight: 600; }
+      #prestige-overlay .p-breakdown .row.bonus b { color: var(--warn); }
+      #prestige-overlay #prestige-continue { width: 100%; padding: 8px 0; font-size: 12.5px; }
+      #prestige-overlay .p-note { font-size: 11px; color: var(--muted); margin-top: 10px; }
+      #contracts .section-label {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 14px 2px 8px;
+      }
+      #contracts .section-label:first-child { margin-top: 2px; }
+      #contracts select.contract-device {
+        background: var(--elevated);
+        color: var(--ink);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font: inherit;
+        font-size: 11.5px;
+        padding: 3px 6px;
+      }
+      .shop-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 10px 12px;
+        margin-bottom: 7px;
+        background: var(--panel-2);
+      }
+      .shop-item .icon { font-size: 16px; width: 24px; text-align: center; flex-shrink: 0; }
+      .shop-item .info { flex: 1; min-width: 0; }
+      .shop-item .name { display: block; font-size: 12.5px; font-weight: 500; }
+      .shop-item .meta { display: block; font-family: 'Geist Mono', ui-monospace, monospace; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .shop-item .price {
+        font-family: 'Geist Mono', ui-monospace, monospace;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--accent);
+        flex-shrink: 0;
+        min-width: 52px;
+        text-align: right;
+      }
+      .shop-item .buy { flex-shrink: 0; }
+      .shop-item.poor { opacity: 0.55; }
+      .shop-item .buy.poor { color: var(--muted); }
 
-      /* Toast — top center, one line, fades out. */
+      /* Price quote under the vendor replacement letter's body. */
+      .mail-quote {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        background: var(--panel-2);
+        padding: 8px 10px;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .mail-quote b { color: var(--ink); font-weight: 600; }
+      .mail-quote .mono { color: var(--accent); }
+
+      /* Compromised-device notice in the inspector Firmware section. */
+      #inspector .fw-compromised {
+        color: var(--danger);
+        border: 1px solid oklch(0.68 0.19 23 / 0.45);
+        border-radius: var(--radius-sm);
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.5;
+        margin-bottom: 8px;
+      }
+
+      /* Toast — floats above console, one line, fades. */
       #toast {
-        position: absolute;
-        top: 30px;
+        position: fixed;
+        bottom: 186px;
         left: 50%;
         transform: translateX(-50%);
         padding: 8px 14px;
@@ -455,77 +823,133 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        z-index: 50;
+        background: var(--panel-2);
+        border: 1px solid var(--warn);
+        border-radius: var(--radius-sm);
       }
       #toast.show { opacity: 1; }
 
-      #hint {
-        position: absolute;
-        bottom: 172px;
-        left: 50%;
-        transform: translateX(-50%);
-        font-family: 'Geist Mono', ui-monospace, monospace;
-        font-size: 11.5px;
-        color: var(--muted);
-        pointer-events: none;
-        transition: opacity 0.15s ease;
+      /* ===== Responsive ===== */
+      @media (max-width: 1080px) {
+        #sidebar { position: fixed; left: 0; top: 44px; bottom: 0; z-index: 35; width: 250px; }
+        body.rail-collapsed #sidebar { margin-left: -250px; width: 250px; }
+        #inspector-panel { position: fixed; right: 0; top: 44px; bottom: 0; z-index: 35; width: 330px; }
+        body.inspector-collapsed #inspector-panel { margin-right: -330px; width: 330px; }
+        /* The inspector overlays the workspace on small screens; keep the
+           console's text out from under it. */
+        #console { margin-right: 330px; }
+        body.inspector-collapsed #console { margin-right: 0; }
+        body.mail-open #mail-panel { width: min(444px, 100vw); }
+        #shop-panel { width: min(480px, 100vw); }
       }
-      body.mail-open #hint { opacity: 0; }
-      .hidden { display: none; }
+      @media (max-width: 780px) {
+        #topbar .stat .label { display: none; }
+        #topbar .stat { padding: 3px 7px; }
+      }
     </style>
   </head>
   <body>
-    <canvas id="board"></canvas>
-    <div class="frame">
-      <span class="ruler"></span>
-      <span class="corner tl"></span><span class="corner tr"></span>
-      <span class="corner bl"></span><span class="corner br"></span>
-    </div>
+    <header id="topbar">
+      <div class="brand"><span class="mark"></span><span>NetCorp</span></div>
+      <div class="stat"><span class="label">Day</span><span class="value" id="hud-calendar">D1 00:00</span></div>
+      <div class="stat cash"><span class="label">Cash</span><span class="value" id="hud-cash">$0</span></div>
+      <div class="stat rep"><span class="label">Reputation</span><span class="value" id="hud-rep">0</span></div>
+      <div class="stat"><span class="label">Insight</span><span class="value" id="hud-insight">0</span></div>
+      <div class="stat"><span class="label">Devices</span><span class="value" id="hud-devices">0</span></div>
+      <div class="spacer"></div>
+      <div class="sim-state" id="sim-state"><span class="dot"></span><span id="sim-label">RUNNING</span></div>
+      <button id="clock" title="Run / pause the clock (Space)">Pause</button>
+      <button id="hard-btn" title="Hard mode: clock runs twice as fast, payouts shrink 20%, worn hardware fails sooner">Hard</button>
+      <button id="shop-btn" title="Equipment store (B)">Shop</button>
+      <button id="toggle-sidebar" title="Toggle catalog sidebar">Catalog</button>
+      <button id="toggle-inspector" title="Toggle inspector">Inspector</button>
+      <button class="iconbtn" id="inbox-btn" title="Mail &amp; tickets (T)">✉<span class="badge" id="inbox-badge"></span></button>
+    </header>
 
-    <div id="hud" class="panel">
-      <div class="head">
-        <span class="brand">NetCorp</span>
-        <span class="calendar" id="hud-calendar">D1 00:00</span>
+    <div id="main">
+      <aside id="sidebar">
+        <div class="side-scroll">
+          <div class="section-title">Tools</div>
+          <div id="tools">
+            <button id="mode-select" title="Select and move (S)">Select <span class="key">S</span></button>
+            <button id="mode-wire" title="Wire two devices (W)">Wire <span class="key">W</span></button>
+            <button id="mode-place" title="Place the selected device (P)">Place <span class="key">P</span></button>
+            <button id="tool-delete" title="Delete selected device (Del)">Delete <span class="key">⌫</span></button>
+          </div>
+          <div class="section-title">Device Catalog</div>
+          <input id="catalog-search" type="search" placeholder="search catalog…" aria-label="Search device catalog" />
+          <div id="catalog"></div>
+        </div>
+      </aside>
+
+      <div id="workspace">
+        <canvas id="board"></canvas>
+        <div id="season-goal" class="hidden"></div>
+        <div id="hint"></div>
       </div>
-      <div class="row"><span class="name">Cash</span><span class="value signal" id="hud-cash">$0</span></div>
-      <div class="row"><span class="name">Reputation</span><span class="value" id="hud-rep">0</span></div>
-      <div class="row"><span class="name">Insight</span><span class="value" id="hud-insight">0</span></div>
-      <div class="row"><span class="name">Devices</span><span class="value" id="hud-devices">0</span></div>
+
+      <aside id="inspector-panel">
+        <div class="head">
+          <span class="title">Inspector</span>
+          <button class="close" id="inspector-close">Esc</button>
+        </div>
+        <div id="inspector"></div>
+      </aside>
     </div>
 
-    <div id="toolbar" class="panel">
-      <button id="mode-select">Select (S)</button>
-      <button id="mode-wire">Wire (W)</button>
-      <button id="mode-place">Place (P)</button>
-      <button id="clock">Pause</button>
-    </div>
-
-    <div id="dock" class="panel"></div>
-
-    <div id="inspector-panel" class="panel">
-      <div class="head">
-        <span>Inspector</span>
-        <button class="close" id="inspector-close">Esc</button>
+    <footer id="console">
+      <div class="console-head">
+        <span class="ctitle">Operations</span>
+        <button class="ctab active" id="ctab-events">Events</button>
+        <button class="ctab" id="ctab-diag">Diagnostics</button>
+        <button class="ctab" id="ctab-activity">Network Activity</button>
+        <div class="spacer" style="flex:1"></div>
+        <button id="console-toggle" title="Collapse / expand console">▾</button>
       </div>
-      <div id="inspector"></div>
-    </div>
+      <div class="console-body" id="console-body">
+        <div id="events-view"></div>
+        <div id="diag-view" class="hidden"></div>
+        <div id="activity-view" class="hidden"></div>
+      </div>
+    </footer>
 
-    <div id="mail-panel" class="panel">
+    <div id="mail-panel">
       <div class="head">
         <div class="tabs">
-          <button id="mail-tab-mail" class="active">Mail <span id="mail-badge" class="badge"></span></button>
+          <button id="mail-tab-mail" class="active">Mail <span id="mail-badge" class="badge"></span><span id="discard-badge" class="badge discard"></span></button>
           <button id="mail-tab-tickets">Tickets <span id="ticket-badge" class="badge"></span></button>
+          <button id="mail-tab-contracts">Contracts</button>
         </div>
         <button class="close" id="mail-close">✕</button>
       </div>
       <div id="mail-view" class="mail-view"></div>
       <div id="tickets" class="hidden"></div>
+      <div id="contracts" class="hidden"></div>
     </div>
 
-    <button id="inbox-btn" title="Mail (T)">✉<span class="badge" id="inbox-badge"></span></button>
+    <div id="shop-panel">
+      <div class="head">
+        <span class="title">Equipment Store</span>
+        <span class="shop-cash mono">Balance <b id="shop-cash">$0</b></span>
+        <button class="close" id="shop-close">✕</button>
+      </div>
+      <div id="shop-view"></div>
+    </div>
 
-    <div id="log-panel"></div>
-    <div id="toast" class="panel"></div>
-    <div id="hint"></div>
+    <div id="prestige-overlay" class="hidden">
+      <div class="prestige-card">
+        <div class="p-season" id="prestige-season">SEASON COMPLETE</div>
+        <div class="p-score mono" id="prestige-score">0</div>
+        <div class="p-rank" id="prestige-rank"></div>
+        <div class="p-breakdown" id="prestige-breakdown"></div>
+        <div class="p-career" id="prestige-career"></div>
+        <button id="prestige-continue">Keep playing</button>
+        <div class="p-note">The next season has already begun — the career total is what the region remembers.</div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
